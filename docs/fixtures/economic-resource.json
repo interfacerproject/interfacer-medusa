@@ -1,0 +1,15 @@
+{
+  "id": "01JTESTRESOURCE000000000001",
+  "name": "Recycled PETG desk organizer — sample",
+  "primaryAccountable": {
+    "id": "01JTESTPERSON00000000000001"
+  },
+  "classifiedAs": [
+    "Product"
+  ],
+  "trackingIdentifier": "IF-SAMPLE-001",
+  "onhandQuantity": {
+    "hasNumericalValue": 1,
+    "hasUnit": "unit:piece"
+  }
+}

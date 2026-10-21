@@ -1,0 +1,6 @@
+.cache/
+.tmp/
+medusa/node_modules/
+medusa/.medusa/
+medusa/.env
+*.log

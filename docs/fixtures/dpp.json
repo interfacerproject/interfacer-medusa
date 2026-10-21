@@ -1,0 +1,13 @@
+{
+  "ID": "dpp-sample-0001",
+  "ProductID": "01JTESTRESOURCE000000000001",
+  "Status": "draft",
+  "ProductOverview": {
+    "description": "PRIVATE SAMPLE: do not project passport sections"
+  },
+  "Attachments": [
+    {
+      "id": "private-attachment-sample"
+    }
+  ]
+}
