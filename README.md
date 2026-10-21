@@ -12,8 +12,11 @@ Phase 0 and a locally tested first spike are implemented with Medusa **2.10.3**.
 Run `npm test` to project a sample resource + passport into a draft with one
 variant and an immutable, idempotent module-owned mapping.
 
-Authorization uses an explicit **CLI-only fixture controller stub**, not live
-registered-key/PDP proof. No passport fields are published.
+Authorization uses an explicit **local fixture controller stub**, not live
+registered-key/PDP proof. No passport fields are published. For GUI testing,
+`npm start` enables the guarded loopback API at
+`http://localhost:9000/dev/interfacer/listings`; `npm run test:http` verifies it
+with curl. **Local testing only; never deploy.**
 
 - [TESTING.md](TESTING.md) — cold-start, projection, observation, retry and limits.
 - [Phase 0 findings](docs/phase0-findings.md) — version gate and source evidence.

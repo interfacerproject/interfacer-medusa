@@ -28,6 +28,14 @@ All paths below are relative to `medusa/node_modules/`. VERIFIED/source means in
 | Subscriber retries/delivery | VERIFIED/source (negative guarantee) | `@medusajs/event-bus-local/dist/services/event-bus-local.js`: Node EventEmitter, grouped events in Map; subscriber exceptions logged, NO retry or durable delivery. Redis implementation `@medusajs/event-bus-redis/dist/services/event-bus-redis.js` defaults `attempts: 1`, supports configured retries; not enabled/tested. Neither implies atomic bridge writes or exactly-once delivery. |
 | Custom integration execution | VERIFIED/source | `Module(...)` registered through `defineConfig({modules:[...]})`; `medusa exec ./src/scripts/project.ts` gets `{container,args}` after module loading. `@medusajs/medusa/dist/commands/exec.js`. Chosen instead of an HTTP write route: no unauthenticated fixture principal on the network. |
 
+## Local-dev HTTP follow-up
+
+The historical Phase-0 choice below was CLI-only. The follow-up adds a guarded local GUI affordance, **not production authorization**:
+- File routing verified in installed 2.10.3 `@medusajs/framework/dist/http/routes-loader.js`: scans `route.ts`, exports GET/POST/OPTIONS; request scope resolves the existing module.
+- CORS behavior verified in `http/router.js`: automatic configured CORS is limited to /store, /admin, /auth. The /dev route explicitly handles preflight and uses the same GUI origins configured in `medusa-config.ts`; no invented `devCors` config key.
+- Real curl on /dev/interfacer/listings verified creation (201), joined GET (200), retry (200, same IDs), wrong controller (403, no writes), invalid DPP parent (400), conflict (409), both GUI preflights (204) and disabled fixture mode (403 on GET/POST/OPTIONS).
+- `npm test` still passes, including direct production guard tests. Exact HTTP commands/responses and lifecycle in TESTING.md. Both HTTP server groups and the labeled DB were stopped.
+
 ## Scope of the first spike
 
 Module-owned immutable ListingBinding + source hashes, passport ID reference only, a draft with one variant. Fixture-only controller attestation is a deliberately named seam, explicitly enabled for local CLI execution and forbidden in production. It is NOT registered-key proof, a live PDP, an IdentityLink, or a signed HTTP envelope. No new Zenflows action, replay registry, customer binding, payment, publication, or ledger write is claimed. A live signed integration remains BLOCKED pending compatible services and policy changes.

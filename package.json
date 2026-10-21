@@ -3,6 +3,7 @@
   "private": true,
   "scripts": {
     "test": "bash scripts/spike.sh test",
+    "test:http": "bash scripts/spike.sh test:http",
     "setup": "bash scripts/spike.sh setup",
     "start": "bash scripts/spike.sh start",
     "project": "bash scripts/spike.sh project",

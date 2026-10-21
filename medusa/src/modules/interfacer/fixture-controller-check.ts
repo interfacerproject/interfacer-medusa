@@ -1,5 +1,5 @@
 // LOCAL TEST SEAM. This is NOT Zenroom signing or registered-key verification.
-// No HTTP route exposes this seam. Production must replace it with online PDP
+// Only the guarded local /dev route and CLI expose this seam. Production needs online PDP
 // verification of a bound envelope and freshly loaded authoritative resource.
 export interface Resource {
   id: string

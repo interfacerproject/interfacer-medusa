@@ -7,8 +7,10 @@ import { fixtureControllerCheck, ControllerCheck } from "../modules/interfacer/f
 import type InterfacerService from "../modules/interfacer/service"
 import { INTERFACER_MODULE } from "../modules/interfacer"
 import { fixtures } from "./fixtures"
+import { verifyHttpGuards } from "./verify-http-guards"
 
 export default async function verify({ container }: ExecArgs) {
+  await verifyHttpGuards()
   const { resource, passport } = fixtures()
   const service = container.resolve<InterfacerService>(INTERFACER_MODULE)
   const products = container.resolve<IProductModuleService>(Modules.PRODUCT)

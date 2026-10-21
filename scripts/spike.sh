@@ -63,8 +63,17 @@ case "${1:-test}" in
     python3 scripts/probe.py
     echo "PASS finished; HTTP server and spike DB stopped (data retained)."
     ;;
+  test:http)
+    trap db_stop EXIT
+    setup
+    fixture_env
+    python3 scripts/http-probe.py
+    ;;
   start)
+    # develop may normalize NODE_ENV; reject production before launching it.
+    [[ "${NODE_ENV:-}" != production ]] || { echo "Refusing local fixture API in production" >&2; exit 1; }
     db_up
+    fixture_env
     # Foreground; Ctrl-C stops the app. Run 'stop' separately for the DB.
     cd medusa
     exec ./node_modules/.bin/medusa develop --host 127.0.0.1 --port 9000 --no-types
@@ -79,5 +88,5 @@ case "${1:-test}" in
     npm --prefix medusa run inspect
     ;;
   stop) db_stop ;;
-  *) echo "Usage: bash scripts/spike.sh {test|setup|start|project|inspect|stop}" >&2; exit 2 ;;
+  *) echo "Usage: bash scripts/spike.sh {test|test:http|setup|start|project|inspect|stop}" >&2; exit 2 ;;
 esac
