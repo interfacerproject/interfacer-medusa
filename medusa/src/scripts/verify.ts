@@ -71,7 +71,8 @@ export default async function verify({ container }: ExecArgs) {
     projectResource(container, resource, passport, controller)))
   assert.equal(new Set(results.map(r => r.product.id)).size, 1)
   const result = results[0]
-  assert.equal(result.product.status, "draft")
+  if (!existing) assert.equal(result.product.status, "draft")
+  else assert(["draft", "published"].includes(result.product.status))
   assert.equal(result.product.variants?.length, 1)
   assert.equal(result.product.variants[0].manage_inventory, false)
   assert.deepEqual(Object.keys(result.product.metadata || {}).sort(),
@@ -83,7 +84,7 @@ export default async function verify({ container }: ExecArgs) {
   const [savedIntent] = await service.listProjectionIntents({ catalog_resource_id: resource.id })
   assert.equal((await products.listProducts({ handle: savedIntent.product_handle })).length, 1)
   if (!existing && !intent) assert(results.some(r => r.recovered))
-  console.log("PASS one draft, one variant, passport reference only, correct module-owned hashes")
+  console.log(`PASS one ${result.product.status} product, one variant, passport reference only, correct module-owned hashes`)
   console.log("PASS concurrent retry/recovery: one product ID and one binding")
   const finalCounts = await counts()
   await assert.rejects(() => projectResource(container, { ...resource, name: "Changed" }, passport, controller), /idempotency_conflict/)

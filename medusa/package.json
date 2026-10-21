@@ -11,7 +11,9 @@
     "typecheck": "tsc --noEmit",
     "project": "medusa exec ./src/scripts/project.ts",
     "verify": "medusa exec ./src/scripts/verify.ts",
-    "inspect": "medusa exec ./src/scripts/inspect.ts"
+    "inspect": "medusa exec ./src/scripts/inspect.ts",
+    "seed:commerce": "medusa exec ./src/scripts/seed-commerce.ts",
+    "publish": "medusa exec ./src/scripts/publish.ts"
   },
   "dependencies": {
     "@medusajs/cli": "2.10.3",

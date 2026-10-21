@@ -4,3 +4,4 @@ medusa/node_modules/
 medusa/.medusa/
 medusa/.env
 *.log
+__pycache__/

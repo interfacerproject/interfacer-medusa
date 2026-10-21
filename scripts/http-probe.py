@@ -5,10 +5,7 @@ import json
 import os
 import shlex
 import signal
-import socket
 import subprocess
-import time
-import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -48,40 +45,9 @@ def counts():
     ], text=True).strip()
 
 
-def serve(command, env, log_name, work):
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 9000))
-    with (root / ".tmp" / log_name).open("w") as log:
-        proc = subprocess.Popen(command, cwd=root, env=env, stdout=log, stderr=log,
-                                start_new_session=True)
-        try:
-            for _ in range(90):
-                if proc.poll() is not None:
-                    raise RuntimeError(f"Medusa exited; see .tmp/{log_name}")
-                try:
-                    with urllib.request.urlopen("http://localhost:9000/health", timeout=1) as res:
-                        assert res.status == 200
-                        break
-                except (OSError, TimeoutError):
-                    time.sleep(1)
-            else:
-                raise RuntimeError(f"Medusa health timeout; see .tmp/{log_name}")
-            work()
-        finally:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                pass
-            except ProcessLookupError:
-                pass
-            finally:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                proc.wait()
-
+# Shared per-PID cleanup; sandbox does not permit killpg.
+from importlib import import_module
+serve = import_module("server-lifecycle").serve
 
 resource = json.loads((root / "docs/fixtures/economic-resource.json").read_text())
 dpp = json.loads((root / "docs/fixtures/dpp.json").read_text())
@@ -115,7 +81,7 @@ def enabled_checks():
     existing = any(row["binding"]["catalog_resource_id"] == resource["id"] for row in before["listings"])
     first = post("request", 200 if existing else 201)
     assert first["created"] is (not existing)
-    assert first["status"] == "draft"
+    assert first["status"] in (["draft", "published"] if existing else ["draft"])
     listed = curl("-H", "Origin: http://localhost:3000")
     rows = [row for row in listed["listings"] if row["binding"]["id"] == first["binding"]["id"]]
     assert len(rows) == 1

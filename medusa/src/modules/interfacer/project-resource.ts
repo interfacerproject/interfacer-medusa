@@ -75,7 +75,8 @@ export async function projectResource(
     if (bound) {
       assertSameSource(bound)
       const product = await products.retrieveProduct(bound.medusa_product_id, { relations: ["variants"] })
-      if (product.status !== "draft" || product.variants?.length !== 1 ||
+      // Binding status is immutable creation evidence, not current publication state.
+      if (!["draft", "published"].includes(product.status) || product.variants?.length !== 1 ||
           product.variants[0].id !== bound.medusa_variant_id ||
           product.metadata?.interfacer_resource_id !== bound.catalog_resource_id ||
           product.metadata?.interfacer_dpp_id !== bound.source_dpp_id) {

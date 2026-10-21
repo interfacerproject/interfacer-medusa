@@ -69,6 +69,19 @@ case "${1:-test}" in
     fixture_env
     python3 scripts/http-probe.py
     ;;
+  test:p1)
+    trap db_stop EXIT
+    setup
+    fixture_env
+    python3 scripts/p1-probe.py
+    echo "PASS P1 finished; HTTP server and spike DB stopped (data retained)."
+    ;;
+  seed:commerce|publish)
+    trap db_stop EXIT
+    setup
+    fixture_env
+    npm --prefix medusa run "$1"
+    ;;
   start)
     # develop may normalize NODE_ENV; reject production before launching it.
     [[ "${NODE_ENV:-}" != production ]] || { echo "Refusing local fixture API in production" >&2; exit 1; }
@@ -88,5 +101,5 @@ case "${1:-test}" in
     npm --prefix medusa run inspect
     ;;
   stop) db_stop ;;
-  *) echo "Usage: bash scripts/spike.sh {test|test:http|setup|start|project|inspect|stop}" >&2; exit 2 ;;
+  *) echo "Usage: bash scripts/spike.sh {test|test:http|test:p1|seed:commerce|publish|setup|start|project|inspect|stop}" >&2; exit 2 ;;
 esac

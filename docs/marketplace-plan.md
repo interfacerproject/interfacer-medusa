@@ -86,3 +86,4 @@ and advances. State lives here + in git; resume from the last `DONE` line.
 ## Ledger (append-only; DONE = verified by the orchestrator on the running system)
 
 - Phase 0: DONE (pinned Medusa 2.10.3, spike projection, dev endpoint, GUI tester) — verified in-browser round-trip.
+- Phase 1: DONE (storefront + publish) — verified: GET /store/products shows published product EUR 19.95 + resource/DPP refs; idempotent; fixture-disabled refused. (orchestrator ran npm run test:p1 -> ALL P1 CHECKS PASSED)
