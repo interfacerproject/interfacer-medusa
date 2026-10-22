@@ -131,9 +131,8 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
       action: "transfer", provider_id: binding.seller_agent_id, receiver_id: identity.person_id,
       resource_id: binding.catalog_resource_id, dpp_id: binding.source_dpp_id,
       order_id: orderId, quantity: Number(line.quantity), has_point_in_time,
+      zenflows_event_id,
     })
-    // The live Zenflows event id travels on the response (not persisted on the
-    // local receipt yet — that needs a model migration, a clean follow-up).
-    return { created: true, receipt: { ...receipt, zenflows_event_id } }
+    return { created: true, receipt }
   })
 }

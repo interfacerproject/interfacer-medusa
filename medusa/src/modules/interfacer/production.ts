@@ -69,7 +69,8 @@ export async function produceBuild(container: MedusaContainer, orderId: string, 
       dpp_id: quote.origin_dpp_id!, origin_dpp_id: quote.origin_dpp_id,
       quote_id: quote.id, quote_hash: quote.quote_hash,
       order_id: orderId, quantity: quote.quantity, has_point_in_time,
+      zenflows_event_id,
     })
-    return { created: true, receipt: { ...receipt, zenflows_event_id } }
+    return { created: true, receipt }
   })
 }

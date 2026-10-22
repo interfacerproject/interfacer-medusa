@@ -17,4 +17,7 @@ export const ReaReceipt = model.define("interfacer_rea_receipt", {
   order_id: model.text().unique(),
   quantity: model.number(),
   has_point_in_time: model.dateTime(),
+  // Bridge C: id of the LIVE Zenflows EconomicEvent this receipt mirrors, when
+  // INTERFACER_ZENFLOWS_URL is configured; null when running stand-alone.
+  zenflows_event_id: model.text().nullable(),
 })
