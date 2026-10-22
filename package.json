@@ -7,6 +7,8 @@
     "test:p1": "bash scripts/spike.sh test:p1",
     "test:p2": "bash scripts/spike.sh test:p2",
     "test:p3": "bash scripts/spike.sh test:p3",
+    "test:p4": "bash scripts/spike.sh test:p4",
+    "seed:matching": "bash scripts/spike.sh seed:matching",
     "seed:commerce": "bash scripts/spike.sh seed:commerce",
     "publish": "bash scripts/spike.sh publish",
     "setup": "bash scripts/spike.sh setup",

@@ -69,6 +69,22 @@ case "${1:-test}" in
     fixture_env
     python3 scripts/http-probe.py
     ;;
+  test:p4)
+    trap db_stop EXIT
+    setup
+    (cd medusa && ./node_modules/.bin/ts-node src/tests/matching.test.ts)
+    fixture_env
+    (cd medusa && ./node_modules/.bin/medusa exec ./src/scripts/seed-matching.ts)
+    python3 scripts/p4-probe.py
+    (cd medusa && ./node_modules/.bin/medusa exec ./src/scripts/verify-p4.ts)
+    echo "PASS P4 finished; HTTP server and spike DB stopped (data retained)."
+    ;;
+  seed:matching)
+    trap db_stop EXIT
+    setup
+    fixture_env
+    (cd medusa && ./node_modules/.bin/medusa exec ./src/scripts/seed-matching.ts)
+    ;;
   test:p3)
     trap db_stop EXIT
     setup
@@ -115,5 +131,5 @@ case "${1:-test}" in
     npm --prefix medusa run inspect
     ;;
   stop) db_stop ;;
-  *) echo "Usage: bash scripts/spike.sh {test|test:http|test:p1|test:p2|test:p3|seed:commerce|publish|setup|start|project|inspect|stop}" >&2; exit 2 ;;
+  *) echo "Usage: bash scripts/spike.sh {test|test:http|test:p1|test:p2|test:p3|test:p4|seed:matching|seed:commerce|publish|setup|start|project|inspect|stop}" >&2; exit 2 ;;
 esac

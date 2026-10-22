@@ -1362,6 +1362,147 @@ All regression commands also passed after P3: `npm test` (invoked as
 Raw logs: `.tmp/p3-regression-{test,test-http,test-p1,test-p2}.log`.
 Final checks: ports 9000/19000 not listening; spike DB status `exited`.
 
+## P4 — Design → services matching
+
+**Verified on Medusa 2.10.3 with real Postgres and curl. Matching uses validated
+structured capability data, NOT tags. All designs/services/prices/providers are
+synthetic local fixtures, not external manufacturing facts. No build purchase yet.**
+
+```bash
+npm run test:p4
+```
+
+Requires the same Docker/Node/npm/Python setup and free port 9000. Do not run
+concurrently with another DB test or interactive server. The command typechecks,
+migrates, runs **9 pure unit tests**, seeds two designs/six services, then boots
+three sequential loopback servers for HTTP, restart and disabled-mode checks.
+It tests concurrent matches, persisted quote IDs/hashes, all rejection categories,
+CORS, invalid/no-write requests and unchanged order/payment/receipt counts.
+With HTTP stopped, CLI assertions verify seed idempotency, quote uniqueness,
+DB immutability and a later service-price change forming a new quote without
+changing the original. It restores the service price, retaining quote history.
+Production/fixture/CORS handler guards are tested before storage resolution.
+
+Every HTTP session stops via **per-PID signals**, including on failure. EXIT
+cleanup stops only the labeled spike DB; data is retained. Artifacts:
+`.tmp/p4-verified.log`, `.tmp/p4-transcript.md`, `.tmp/p4-server*.log`.
+Pure tests alone (no DB/server):
+
+```bash
+(cd medusa && ./node_modules/.bin/ts-node src/tests/matching.test.ts)
+```
+
+### Seed and use manually
+
+```bash
+npm run seed:matching     # migrate + idempotent local seed; stops DB
+npm start                # foreground loopback server, terminal 1
+```
+
+In terminal 2:
+
+```bash
+curl --fail http://127.0.0.1:9000/dev/interfacer/designs
+curl --fail http://127.0.0.1:9000/dev/interfacer/services
+curl --fail http://127.0.0.1:9000/dev/interfacer/match \
+  -H 'Content-Type: application/json' --data '{"designId":"ifdes_p4_organizer"}'
+```
+
+Stop with Ctrl-C in terminal 1, then `npm run stop`. GETs are read-only and return
+`{designs:[...]}` / `{services:[...]}`. POST returns HTTP 200:
+`{matches:[{service,quote}],rejected:[{service,reason}]}`. It forms fixed quotes
+for every compatible candidate; choose the desired match's **quote.id** for P5.
+An unknown design is 404; missing/invalid designId or extra price/quantity/service
+fields are 400. No request price overrides the server's persisted service rates.
+All three routes/OPTIONS share the existing fixture opt-in, production denial,
+no-store and exact localhost **3104/3000** CORS guards. CORS is not authentication;
+anyone reaching this seam can form demo quotes. Never expose it publicly.
+
+### Matching, prices and immutable quotes
+
+- Requirements: `process:[...]`, `materials:[...]`, `max_dimensions_mm:{x,y,z}`,
+  positive `tolerance_mm`, positive integer `quantity`. Design also has name,
+  ID and nullable `origin_dpp_id`.
+- Capabilities: `processes:[...]`, `materials:[...]`, `build_volume_mm:{x,y,z}`,
+  positive `min_tolerance_mm`. Service also has provider Person ID, name, ID,
+  `{country_code,city}` location, `base_price_eur` and `per_unit_price_eur`.
+  JSONB objects have strict runtime schemas; unsupported requirement keys fail
+  closed. Missing requirements are not treated as unconstrained wildcards.
+- **Every** required process/material must be covered (case-sensitive equality),
+  every axis must fit without rotation, and service minimum tolerance must be
+  <= design tolerance. Equal dimensions/tolerance match. Rejections give concrete
+  reasons/values. Rank by ascending total price, tie-break by service ID.
+- Price = base + per-unit × quantity in EUR. Prices persist as integer cents;
+  snapshot exposes `amount_eur` plus base/per-unit/total cents. Two decimals,
+  nonnegative base/unit amounts and total > 0, <= EUR 1,000,000 are required.
+  Quantity is <= 1,000,000. No inferred tax/shipping/royalty/discount is added.
+- Quotes store design/service/provider/origin DPP/quantity/total plus a complete
+  versioned, detached immutable snapshot and SHA-256 hash. Unique hash + advisory
+  lock makes identical retries reuse the same `ifquote_...` ID. DB triggers block
+  updates, deletion and soft-deletion. A changed service yields a new quote;
+  old terms remain retrievable by ID for P5. Hashes are local integrity hashes,
+  NOT signatures. No expiry, capacity reservation or remote supplier commitment.
+
+Seed expectations:
+
+| Design | Compatible service → fixed EUR total | Concrete incompatible examples |
+| --- | --- | --- |
+| `ifdes_p4_organizer` (PETG, 120×80×60 mm, 0.3 mm, qty 2) | `ifsvc_p4_standard` → 19.00; `ifsvc_p4_large` → 36.00 | laser: wrong process; small: x too big; coarse: tolerance; ABS-only: missing PETG |
+| `ifdes_p4_panel` (PLA, 300×200×10 mm, 0.15 mm, qty 1) | `ifsvc_p4_large` → 28.00 | standard: x too big + tolerance; laser/small/coarse/ABS-only also rejected |
+
+This is compatibility **against declared synthetic data**, not CAD/toolpath
+validation, material certification, actual production availability, price research,
+shipping coverage or a manufacturability guarantee. P5 purchase/production and
+P6 signed authorization/GUI remain separate; no live DPP/Zenflows call or driven
+browser verification is claimed.
+
+### Actual verified output and HTTP evidence
+
+Passed repeatedly on the existing default DB and a **cold** database. Cold
+commands executed (all exit 0; DB retained in the labeled spike container):
+
+```bash
+npm run setup
+docker exec interfacer-medusa-spike-db createdb -U medusa interfacer_medusa_p4_acceptance
+DATABASE_URL=postgres://medusa:medusa_local@127.0.0.1:55432/interfacer_medusa_p4_acceptance npm run test:p4
+```
+
+Selected real output from `.tmp/p4-cold-verified.log`:
+
+```text
+ℹ tests 9
+ℹ pass 9
+ℹ fail 0
+PASS seeded structured SYNTHETIC designs/services: 2/6 (idempotent; no external data)
+PASS MATCH organizer: standard EUR 19.00, large EUR 36.00; laser wrong_process, small too_big, coarse tolerance, ABS missing_material.
+PASS MATCH panel: large EUR 28.00 only; standard rejected for dimensions + tolerance.
+PASS four concurrent matches: same quote IDs/hashes, one row per terms hash; no order/payment/receipt created.
+PASS RESTART: stored immutable quote IDs, snapshots and hashes unchanged.
+PASS disabled fixture mode: designs/services/match and preflights refused.
+ALL P4 HTTP CHECKS PASSED; all server sessions stopped via per-PID signals.
+PASS seed idempotency, quote hash uniqueness and DB immutable price/snapshot/update/soft-delete/delete.
+PASS changed service price => new quote/hash; old quote unchanged and still retrievable by ID for P5.
+ALL P4 CHECKS PASSED (structured synthetic capabilities, not tags or external manufacturability proof)
+PASS P4 finished; HTTP server and spike DB stopped (data retained).
+```
+
+[Verbatim real curl commands and complete responses](docs/phase4-http-evidence.md)
+include GET designs/services, both successful matches, unknown-design 404 and
+fixture-disabled 403. Full cold transcript: `.tmp/p4-cold-transcript.md`.
+For example, the cold organizer's standard quote actually persisted as
+`ifquote_01M5GGY29QP9FKFY6TRYK6EM2K`, quantity **2**, total **1900 cents**, hash
+`2e12643e6ad3361a70000e311412086d99cf9fa7d381c9ef16b8da67f949f8d4`.
+The laser rejection was `wrong_process: missing fdm_3d_print`; small was
+`too_big: x requires 120mm > 100mm`; coarse was
+`tolerance: service 0.5mm > required 0.3mm`; ABS-only was
+`missing_material: PETG`. Other databases generate different quote IDs.
+
+Also passed after implementation: `npm run test`, `npm run test:http`,
+`npm run test:p1`, `npm run test:p2`, `npm run test:p3`. Logs:
+`.tmp/p4-regression-{test,test-http,test-p1,test-p2,test-p3}.log`.
+Final checks: no listener on 9000/19000; labeled spike DB `exited`.
+See [P4 findings](docs/phase4-findings.md) for implementation and migration details.
+
 ## Authorization: explicit local stub, not cryptographic proof
 
 `medusa/src/modules/interfacer/fixture-controller-check.ts` is the deliberately named **fixture controller seam**. Root `start`/`project`/`test`/`test:http` scripts explicitly enable `INTERFACER_AUTH_MODE=fixture-controller-stub`. It compares a locally asserted Person with the resource fixture's `primaryAccountable.id`. Only that controller is allowed; seller eligibility is NOT an additional gate.
