@@ -11,7 +11,7 @@ export function allowLocalRequest(req: MedusaRequest, res: MedusaResponse): bool
   if (origin && DEV_GUI_ORIGINS.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin)
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type")
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
   }
   if (process.env.INTERFACER_AUTH_MODE !== "fixture-controller-stub" ||
       process.env.NODE_ENV === "production") {

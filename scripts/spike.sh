@@ -8,7 +8,8 @@ export XDG_CONFIG_HOME="$ROOT/.cache/config"
 export TMPDIR="$ROOT/.tmp"
 export MEDUSA_DISABLE_TELEMETRY=true
 export DATABASE_URL="${DATABASE_URL:-postgres://medusa:medusa_local@127.0.0.1:55432/interfacer_medusa}"
-DB=interfacer-medusa-spike-db
+export INTERFACER_DB_CONTAINER="${INTERFACER_DB_CONTAINER:-interfacer-medusa-spike-db}"
+DB="$INTERFACER_DB_CONTAINER"
 
 check_owned() {
   local label
@@ -22,7 +23,7 @@ db_up() {
   else
     docker run -d --name "$DB" --label interfacer.medusa.spike=true \
       -e POSTGRES_USER=medusa -e POSTGRES_PASSWORD=medusa_local -e POSTGRES_DB=interfacer_medusa \
-      -p 127.0.0.1:55432:5432 postgres:15-alpine >/dev/null
+      -p "127.0.0.1:${INTERFACER_DB_PORT:-55432}:5432" postgres:15-alpine >/dev/null
   fi
   for _ in {1..45}; do
     if docker exec "$DB" pg_isready -U medusa -d interfacer_medusa >/dev/null 2>&1; then return; fi
@@ -68,6 +69,14 @@ case "${1:-test}" in
     setup
     fixture_env
     python3 scripts/http-probe.py
+    ;;
+  test:p5)
+    trap db_stop EXIT
+    setup
+    fixture_env
+    (cd medusa && ./node_modules/.bin/medusa exec ./src/scripts/seed-matching.ts)
+    python3 scripts/p5-probe.py
+    echo "PASS P5 finished; HTTP server and spike DB stopped (data retained)."
     ;;
   test:p4)
     trap db_stop EXIT
@@ -131,5 +140,5 @@ case "${1:-test}" in
     npm --prefix medusa run inspect
     ;;
   stop) db_stop ;;
-  *) echo "Usage: bash scripts/spike.sh {test|test:http|test:p1|test:p2|test:p3|test:p4|seed:matching|seed:commerce|publish|setup|start|project|inspect|stop}" >&2; exit 2 ;;
+  *) echo "Usage: bash scripts/spike.sh {test|test:http|test:p1|test:p2|test:p3|test:p4|test:p5|seed:matching|seed:commerce|publish|setup|start|project|inspect|stop}" >&2; exit 2 ;;
 esac

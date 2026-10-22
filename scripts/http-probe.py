@@ -37,7 +37,7 @@ def curl(*args, expected=200):
 def counts():
     database = urlparse(os.environ["DATABASE_URL"]).path.lstrip("/")
     return subprocess.check_output([
-        "docker", "exec", "interfacer-medusa-spike-db", "psql", "-U", "medusa",
+        "docker", "exec", os.environ.get("INTERFACER_DB_CONTAINER", "interfacer-medusa-spike-db"), "psql", "-U", "medusa",
         "-d", database, "-Atc",
         "SELECT (SELECT count(*) FROM product), (SELECT count(*) FROM product_variant), "
         "(SELECT count(*) FROM interfacer_listing_binding), "

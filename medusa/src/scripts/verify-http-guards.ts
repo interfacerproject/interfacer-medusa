@@ -10,6 +10,8 @@ import { GET as receipts, OPTIONS as receiptOptions } from "../api/dev/interface
 import { GET as designs, OPTIONS as designOptions } from "../api/dev/interfacer/designs/route"
 import { GET as services, OPTIONS as serviceOptions } from "../api/dev/interfacer/services/route"
 import { POST as match, OPTIONS as matchOptions } from "../api/dev/interfacer/match/route"
+import { POST as acceptBuild, OPTIONS as acceptOptions } from "../api/dev/interfacer/build-orders/route"
+import { POST as produce, OPTIONS as produceOptions } from "../api/dev/interfacer/build-orders/[id]/produce/route"
 import { validatePriceEUR } from "../modules/interfacer/publish-listing"
 
 export async function verifyHttpGuards() {
@@ -33,7 +35,7 @@ export async function verifyHttpGuards() {
   }
   const guarded = [GET, POST, OPTIONS, seed, seedOptions, publish, publishOptions,
     identity, identityOptions, checkout, checkoutOptions, deliver, deliverOptions, receipts, receiptOptions,
-    designs, designOptions, services, serviceOptions, match, matchOptions]
+    designs, designOptions, services, serviceOptions, match, matchOptions, acceptBuild, acceptOptions, produce, produceOptions]
   try {
     for (const value of [undefined, null, "19.95", NaN, Infinity, 0, -1, 1.001, 1000001]) {
       assert.throws(() => validatePriceEUR(value), /invalid_price/)
@@ -58,7 +60,7 @@ export async function verifyHttpGuards() {
       assert.equal((await invoke(handler, "https://example.org")).status, 403)
     }
     for (const origin of ["http://localhost:3104", "http://localhost:3000"]) {
-      for (const handler of [OPTIONS, seedOptions, publishOptions, identityOptions, checkoutOptions, deliverOptions, receiptOptions, designOptions, serviceOptions, matchOptions]) {
+      for (const handler of [OPTIONS, seedOptions, publishOptions, identityOptions, checkoutOptions, deliverOptions, receiptOptions, designOptions, serviceOptions, matchOptions, acceptOptions, produceOptions]) {
         const response = await invoke(handler, origin)
         assert.equal(response.status, 204)
         assert.equal(response.headers["Access-Control-Allow-Origin"], origin)
@@ -74,7 +76,7 @@ export async function verifyHttpGuards() {
       { designId: "ok", priceEUR: 0.01 }, { designId: "ok", serviceId: "untrusted" }]) {
       assert.equal((await invoke(match, undefined, body)).status, 400)
     }
-    console.log("PASS HTTP handlers (including P1/P2/P3/P4 commerce/publish/identity/stock/delivery/receipts/matching) + EUR price validation: fixture opt-in + production guards (GET/POST/OPTIONS), CORS, body validation; no storage access")
+    console.log("PASS HTTP handlers (including P1/P2/P3/P4/P5 commerce/publish/identity/stock/delivery/receipts/matching) + EUR price validation: fixture opt-in + production guards (GET/POST/OPTIONS), CORS, body validation; no storage access")
   } finally {
     for (const [key, value] of [
       ["INTERFACER_AUTH_MODE", original.mode], ["NODE_ENV", original.env],

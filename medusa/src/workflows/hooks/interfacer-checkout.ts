@@ -7,14 +7,15 @@ import { canonicalJson } from "../../modules/interfacer/project-resource"
 completeCartWorkflow.hooks.validate(async ({ cart }, { container }) => {
   const evidence = await checkoutEvidence(container, cart)
   if (!evidence) return
+  if (evidence.kind === "build" && Number(cart.total) !== evidence.total) refuse("build_fixed_quote_price_required")
   if (canonicalJson(cart.metadata?.interfacer_purchase) !== canonicalJson(evidence.purchase)) {
     refuse("interfacer_checkout_evidence_required")
   }
   for (const { item, metadata } of evidence.lines) {
-    if (!item.variant?.manage_inventory || item.variant.allow_backorder ||
+    if (evidence.kind === "stock" && (!item.variant?.manage_inventory || item.variant.allow_backorder ||
         (item.variant.inventory_items?.length !== 1 ||
-         Number(item.variant.inventory_items[0].required_quantity) !== 1)) refuse("interfacer_inventory_required")
-    if (Object.entries(metadata).some(([key, value]) => item.metadata?.[key] !== value)) {
+         Number(item.variant.inventory_items[0].required_quantity) !== 1))) refuse("interfacer_inventory_required")
+    if (Object.entries(metadata).some(([key, value]) => canonicalJson(item.metadata?.[key]) !== canonicalJson(value))) {
       refuse("interfacer_checkout_evidence_required")
     }
   }

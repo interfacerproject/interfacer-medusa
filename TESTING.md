@@ -1503,6 +1503,138 @@ Also passed after implementation: `npm run test`, `npm run test:http`,
 Final checks: no listener on 9000/19000; labeled spike DB `exited`.
 See [P4 findings](docs/phase4-findings.md) for implementation and migration details.
 
+## P5 — Build purchase + production trace
+
+**Verified with real Medusa 2.10.3, Postgres, curl and native manual payment.
+`rea-receipts` remains a LOCAL STAND-IN, not a live Zenflows ledger. No successor
+passport is minted; order and production receipt reference the origin DPP.**
+
+```bash
+npm run test:p5
+```
+
+Requires the same Docker/Node/npm/Python setup, free port 9000, and no concurrent
+DB test/server. Typechecks/migrates, seeds P4, forms a quote, registers/logs in
+real customers and reuses P2's IdentityLink + Store checkout/payment path.
+Each successful run retains two new captured build orders: one produced and one
+intentionally never produced. No stock is fabricated for made-to-order builds.
+
+### Model, purchase and milestone
+
+- **Native product/variant per immutable P4 quote.** `BuildOffer` binds the quote
+  to its published native sellable; `BuildAcceptance` immutably binds the chosen
+  quote to cart/customer before adding the line. The native Medusa order is the
+  build order. A cart quantity of **1** buys the whole quote: **EUR 19 for two
+  produced pieces**, not EUR 19 per piece. No capacity reservation is claimed.
+- Create a native EUR seed cart; authenticate and attach its customer via P2's
+  `/store/carts/:id/customer`; bind an IdentityLink if not already bound.
+  **POST `/dev/interfacer/build-orders` `{cartId,quoteId}`**, with customer
+  session/Bearer auth, accepts the P4 quote and adds one server-priced line.
+  Response: `{acceptance,offer,build,price_eur}`. Retry reuses all IDs/line.
+  Unknown/extra service/provider/price/quantity fields are refused.
+- Reuse native Store payment-collection/payment-session/completion routes with
+  `pp_system_default`. Server price comes only from the quote. Order and line
+  metadata persist design/service/provider/quote/hash/origin-DPP/quantity; order
+  metadata also persists buyer Person, identity link and acceptance ID.
+- Exactly **one quoted lot / one supplier** per build order. Mixed suppliers,
+  stock+build, multiple quotes, replacement service variant, forged canonical
+  service metadata, changed quantity and missing acceptance fail at completion.
+  Generic line mutation can form an invalid cart; it cannot place that order.
+  Editable cart metadata is not the acceptance authority. Always-on native
+  workflow validation protects internal callers too, including fixture-disabled
+  evidence and custom-price bypass attempts.
+- Completion **authorizes** the manual payment, as P2 does. Native
+  `capturePaymentWorkflow` actually captures it upfront in the test, with HTTP
+  stopped. Capture is financial only: **no production event** is written.
+- **POST `/dev/interfacer/build-orders/:id/produce` `{}`**, using the native
+  **order ID**, asserts the production milestone. Requires captured upfront
+  payment, matching native cart/order linkage, immutable acceptance/quote/buyer,
+  canonical persisted references and exact price. No native fulfillment/delivery
+  is fabricated; this is an explicit local admin/supplier production action.
+- First milestone: 201 `{created:true,receipt}`. Retry: 200 with the identical
+  receipt ID/time. The receipt is the durable local milestone: `action:produce`,
+  provider = quote's service provider, receiver = buyer Person, resource/design,
+  service, origin DPP, quote ID/hash, native order, quoted quantity **2**.
+  Per-order Postgres lock + unique order sink + immutable triggers prevent
+  duplicates. No event on payment alone, no successor resource/passport minted.
+
+Acceptance/production/OPTIONS retain fixture opt-in, production denial, no-store
+and the exact localhost **3000/3104** origin allowlist. Dev preflight permits
+Authorization for Bearer calls. Acceptance also authenticates the real Medusa
+customer. **Production is still a fixture admin/supplier seam: anyone reaching
+it can assert production.** CORS is not authorization; never expose publicly.
+Signed supplier authorization and driven-browser integration remain P6.
+Old immutable quotes remain acceptable; no expiry or remote supplier commitment.
+Missing origin DPP is refused for P5. See [P5 findings](docs/phase5-findings.md).
+
+### Verified execution, isolation and cleanup
+
+This phase created a **new container**, leaving all pre-existing containers
+untouched, including the original spike DB. The following environment was used
+for the successful `npm run test:p5` and all final regressions:
+
+```bash
+export INTERFACER_DB_CONTAINER=interfacer-medusa-p5-verified-db
+export INTERFACER_DB_PORT=55435
+export DATABASE_URL=postgres://medusa:medusa_local@127.0.0.1:55435/interfacer_medusa
+npm run test:p5
+npm run test
+npm run test:http
+npm run test:p1
+npm run test:p2
+npm run test:p3
+npm run test:p4
+```
+
+The container was initially created with `postgres:15-alpine`, the existing
+`interfacer.medusa.spike=true` ownership label and local demo DB credentials,
+host binding `127.0.0.1:55435:5432`. First P5 run applied all migrations cold;
+later runs verified retained-state behavior. Harness container/port overrides
+are optional; defaults remain `interfacer-medusa-spike-db` / 55432. When choosing
+an alternate port, set DATABASE_URL consistently as above. SQL probes also use
+the selected owned container. Only labeled containers are lifecycle-managed.
+
+All four sequential P5 HTTP sessions stop using **per-PID signals**, even on
+failure. Native CLI capture/guard checks run with HTTP stopped; the shell EXIT
+trap stops the owned DB, retaining data. Verified at the end: no listener on
+9000/19000, new DB container `exited`. No git or sibling access performed.
+
+Artifacts: `.tmp/p5-final.log`, `.tmp/p5-transcript.md`, `.tmp/p5-server.log`,
+`.tmp/p5-*-server.log`, `.tmp/p5-state.json`; final regressions:
+`.tmp/p5-regression-{test,test-http,test-p1,test-p2,test-p3,test-p4}.log`.
+Transcripts/state contain disposable customer credentials and local sessions;
+keep them local. Full native order/metadata/payment responses are in the curl
+transcript, not simulated output.
+
+Selected **verbatim** successful output (2026-10-22 UTC):
+
+```text
+PASS ONE SUPPLIER: actual mixed-supplier cart, replacement service variant, forged service metadata and changed accepted quote refused; client price and quantity overrides refused.
+PASS BUILD PURCHASE order=order_01M5GJ14D9KD8TNXBY52YT6M7X: EUR 19 fixed quote, bound buyer, persisted design/service/provider/quote/hash/origin DPP; manual payment authorized; zero events before milestone.
+PASS NO EVENT ON CAPTURE: order=order_01M5GJ14D9KD8TNXBY52YT6M7X, payment=pay_01M5GJ14EFQQSJBSY6X9P6WPQ5, captured_at=2026-10-22T01:01:30.898Z; zero production events.
+PASS NO EVENT ON CAPTURE: order=order_01M5GJ14YZQHBN9JPE4C84JC63, payment=pay_01M5GJ14ZWNGN71JD5CF6KESNS, captured_at=2026-10-22T01:01:30.943Z; zero production events.
+PASS PRODUCTION: exactly one produce event; correct provider/receiver/design/service/origin-DPP/quote/hash, quantity=2; four concurrent milestones => one 201 + three 200; retry unchanged.
+PASS RESTART + PAYMENT WITHOUT MILESTONE: same receipt ID/time after restart; separate captured build without production still has zero events.
+PASS disabled fixture mode: acceptance/production/preflights refused.
+PASS immutable offer/acceptance/production receipt + unique order sink; direct workflow evidence/price bypass refused with fixture mode disabled; guarded internal actions refused.
+ALL P5 CHECKS PASSED; all server sessions stopped via per-PID signals.
+PASS P5 finished; HTTP server and spike DB stopped (data retained).
+```
+
+One real production curl/response from that run (one of the four concurrent
+calls; all others returned 200 with the same receipt):
+
+```bash
+curl --silent --show-error --max-time 45 --write-out '
+HTTP %{http_code}
+' -X POST -H 'Content-Type: application/json' --data '{}' http://127.0.0.1:9000/dev/interfacer/build-orders/order_01M5GJ14D9KD8TNXBY52YT6M7X/produce
+```
+
+```text
+{"created":true,"receipt":{"id":"ifrea_01M5GJ1GQJNXENY05TP37MJJCA","action":"produce","design_id":"ifdes_p4_organizer","service_id":"ifsvc_p4_standard","origin_dpp_id":"dpp-p4-origin-demo","quote_id":"ifquote_01M5GHGS2CFF3SXSRPS5R313QD","quote_hash":"2e12643e6ad3361a70000e311412086d99cf9fa7d381c9ef16b8da67f949f8d4","provider_id":"p4-demo-provider-standard","receiver_id":"p5-buyer-1792630875195288000","resource_id":"ifdes_p4_organizer","dpp_id":"dpp-p4-origin-demo","order_id":"order_01M5GJ14D9KD8TNXBY52YT6M7X","quantity":2,"has_point_in_time":"2026-10-22T01:01:39.441Z","created_at":"2026-10-22T01:01:39.442Z","updated_at":"2026-10-22T01:01:39.442Z","deleted_at":null}}
+HTTP 201
+```
+
 ## Authorization: explicit local stub, not cryptographic proof
 
 `medusa/src/modules/interfacer/fixture-controller-check.ts` is the deliberately named **fixture controller seam**. Root `start`/`project`/`test`/`test:http` scripts explicitly enable `INTERFACER_AUTH_MODE=fixture-controller-stub`. It compares a locally asserted Person with the resource fixture's `primaryAccountable.id`. Only that controller is allowed; seller eligibility is NOT an additional gate.

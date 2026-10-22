@@ -45,7 +45,7 @@ def snapshot():
     sql = "SELECT " + ", ".join(f"(SELECT count(*) FROM {table})" for table in tables)
     database = urlparse(os.environ["DATABASE_URL"]).path.lstrip("/")
     counts = subprocess.check_output([
-        "docker", "exec", "interfacer-medusa-spike-db", "psql", "-U", "medusa",
+        "docker", "exec", os.environ.get("INTERFACER_DB_CONTAINER", "interfacer-medusa-spike-db"), "psql", "-U", "medusa",
         "-d", database, "-Atc", sql,
     ], text=True).strip().split("|")
     return dict(zip(tables, map(int, counts)))

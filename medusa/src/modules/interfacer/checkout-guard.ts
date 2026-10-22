@@ -3,12 +3,16 @@ import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/util
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
 
-type CheckoutItem = {
+import { buildCheckoutEvidence } from "./build-checkout"
+
+export type CheckoutItem = {
   id: string; product_id?: string | null; variant_id?: string | null; quantity: BigNumberValue
   metadata?: Record<string, unknown> | null
+  unit_price?: BigNumberValue; adjustments?: { amount: BigNumberValue }[]; tax_lines?: { rate: BigNumberValue }[]
   variant?: { manage_inventory?: boolean; allow_backorder?: boolean; inventory_items?: { required_quantity?: BigNumberValue }[] }
 }
-type CheckoutCart = {
+export type CheckoutCart = {
+  currency_code?: string; shipping_methods?: unknown[]
   id: string; customer_id?: string | null; customer?: { id: string } | null
   metadata?: Record<string, unknown> | null; items?: CheckoutItem[]
 }
@@ -19,6 +23,8 @@ export function refuse(reason: string): never {
 // Look up immutable bindings, never infer identity/authority from client metadata.
 export async function checkoutEvidence(container: MedusaContainer, cart: CheckoutCart) {
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
+  const build = await buildCheckoutEvidence(container, cart)
+  if (build) return build
   const productIds = [...new Set((cart.items ?? []).map(i => i.product_id).filter(Boolean))] as string[]
   const bindings = productIds.length
     ? await integration.listListingBindings({ medusa_product_id: productIds }) : []
@@ -49,7 +55,7 @@ export async function checkoutEvidence(container: MedusaContainer, cart: Checkou
     } }]
   })
   if (new Set(lines.map(l => l.binding.id)).size !== lines.length) refuse("interfacer_single_unit_required")
-  return { customerId, lines, purchase: {
+  return { kind: "stock" as const, customerId, lines, purchase: {
     buyer_person_id: identity.person_id,
     identity_link_id: identity.id,
     listings: lines.map(l => l.metadata),

@@ -2,6 +2,7 @@ import { authenticate, defineMiddlewares } from "@medusajs/framework/http"
 import type { AuthenticatedMedusaRequest, MedusaRequest, MedusaResponse, MedusaNextFunction } from "@medusajs/framework/http"
 import type { ICartModuleService } from "@medusajs/framework/types"
 import { Modules } from "@medusajs/framework/utils"
+import { allowLocalRequest } from "./dev/interfacer/local-guard"
 import { checkoutEvidence, refuse } from "../modules/interfacer/checkout-guard"
 
 async function prepareCheckout(req: MedusaRequest, _res: MedusaResponse, next: MedusaNextFunction) {
@@ -27,6 +28,10 @@ async function prepareCheckout(req: MedusaRequest, _res: MedusaResponse, next: M
 }
 
 export default defineMiddlewares({ routes: [{
+  matcher: "/dev/interfacer/build-orders", method: "POST",
+  middlewares: [(req, res, next) => { if (allowLocalRequest(req, res)) next() },
+    authenticate("customer", ["session", "bearer"])],
+}, {
   matcher: "/store/carts/:id/complete",
   method: "POST",
   // All marketplace completion requires a real customer session/bearer. Email

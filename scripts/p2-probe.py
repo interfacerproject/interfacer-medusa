@@ -44,7 +44,7 @@ def post(path, body=None, auth=(), expected=200):
 
 def sql(statement):
     database = urlparse(os.environ["DATABASE_URL"]).path.lstrip("/")
-    return subprocess.check_output(["docker", "exec", "interfacer-medusa-spike-db", "psql", "-U", "medusa",
+    return subprocess.check_output(["docker", "exec", os.environ.get("INTERFACER_DB_CONTAINER", "interfacer-medusa-spike-db"), "psql", "-U", "medusa",
                                     "-d", database, "-Atc", statement], text=True).strip()
 
 

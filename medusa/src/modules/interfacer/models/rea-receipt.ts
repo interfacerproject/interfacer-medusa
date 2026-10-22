@@ -4,7 +4,12 @@ import { model } from "@medusajs/framework/utils"
 // Swappable sink: delivery.ts resolves the facts, then calls this module's store.
 export const ReaReceipt = model.define("interfacer_rea_receipt", {
   id: model.id({ prefix: "ifrea" }).primaryKey(),
-  action: model.enum(["transfer"]),
+  action: model.enum(["transfer", "produce"]),
+  design_id: model.text().nullable(),
+  service_id: model.text().nullable(),
+  origin_dpp_id: model.text().nullable(),
+  quote_id: model.text().nullable(),
+  quote_hash: model.text().nullable(),
   provider_id: model.text(),
   receiver_id: model.text(),
   resource_id: model.text(),
