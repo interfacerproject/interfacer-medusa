@@ -3,6 +3,10 @@
   "private": true,
   "scripts": {
     "test": "bash scripts/spike.sh test",
+    "dev:up": "python3 scripts/dev-store.py up",
+    "dev:down": "python3 scripts/dev-store.py down",
+    "test:p6b": "python3 scripts/p6b-probe.py",
+    "test:all": "bash scripts/test-all.sh",
     "test:http": "bash scripts/spike.sh test:http",
     "test:p1": "bash scripts/spike.sh test:p1",
     "test:p2": "bash scripts/spike.sh test:p2",
@@ -19,5 +23,8 @@
     "project": "bash scripts/spike.sh project",
     "inspect": "bash scripts/spike.sh inspect",
     "stop": "bash scripts/spike.sh stop"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1"
   }
 }

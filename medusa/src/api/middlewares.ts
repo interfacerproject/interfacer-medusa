@@ -3,6 +3,7 @@ import type { AuthenticatedMedusaRequest, MedusaRequest, MedusaResponse, MedusaN
 import type { ICartModuleService } from "@medusajs/framework/types"
 import { Modules } from "@medusajs/framework/utils"
 import { allowLocalRequest } from "./dev/interfacer/local-guard"
+import { allowStorefront } from "../storefront/dev"
 import { checkoutEvidence, refuse } from "../modules/interfacer/checkout-guard"
 
 import { authFromHeader, AUTH_HEADER, checkoutOperationParams, verifySignedOperation } from "../modules/interfacer/signed-envelope"
@@ -32,6 +33,10 @@ async function prepareCheckout(req: MedusaRequest, _res: MedusaResponse, next: M
 }
 
 export default defineMiddlewares({ routes: [{
+  matcher: "/dev/store/(sign|capture)", method: "POST",
+  middlewares: [(req, res, next) => { if (allowStorefront(req, res)) next() },
+    authenticate("customer", ["session", "bearer"])],
+}, {
   matcher: "/dev/interfacer/build-orders", method: "POST",
   middlewares: [(req, res, next) => { if (allowLocalRequest(req, res)) next() },
     authenticate("customer", ["session", "bearer"])],

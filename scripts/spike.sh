@@ -21,7 +21,7 @@ db_up() {
     check_owned
     docker start "$DB" >/dev/null
   else
-    docker run -d --name "$DB" --label interfacer.medusa.spike=true \
+    docker run -d --name "$DB" --label interfacer.medusa.spike=true --label "interfacer.medusa.root=$ROOT" \
       -e POSTGRES_USER=medusa -e POSTGRES_PASSWORD=medusa_local -e POSTGRES_DB=interfacer_medusa \
       -p "127.0.0.1:${INTERFACER_DB_PORT:-55432}:5432" postgres:15-alpine >/dev/null
   fi

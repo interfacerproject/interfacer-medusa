@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { verifyStorefrontGuards } from "./verify-storefront-guards"
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { GET, POST, OPTIONS } from "../api/dev/interfacer/listings/route"
 import { POST as seed, OPTIONS as seedOptions } from "../api/dev/interfacer/commerce/route"
@@ -15,6 +16,7 @@ import { POST as produce, OPTIONS as produceOptions } from "../api/dev/interface
 import { validatePriceEUR } from "../modules/interfacer/publish-listing"
 
 export async function verifyHttpGuards() {
+  await verifyStorefrontGuards()
   const original = { mode: process.env.INTERFACER_AUTH_MODE, env: process.env.NODE_ENV }
   // Any dependency resolution would indicate a guard reached storage.
   const scope = { resolve: () => { throw new Error("guard reached storage") } }

@@ -49,6 +49,7 @@ def stop(proc):
 
 def serve(command, env, log_name, work, port=9000, cwd=None):
     with socket.socket() as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(("127.0.0.1", port))
     with (root / ".tmp" / log_name).open("w") as log:
         proc = subprocess.Popen(command, cwd=cwd or root, env=env, stdout=log, stderr=log,

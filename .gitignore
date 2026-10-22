@@ -1,4 +1,5 @@
 .cache/
+node_modules/
 .tmp/
 medusa/node_modules/
 medusa/.medusa/

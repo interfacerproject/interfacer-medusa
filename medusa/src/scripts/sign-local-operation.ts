@@ -1,4 +1,4 @@
-// CLI/TEST CLIENT ONLY. Server verification never imports private keys.
+// CLI/test + explicitly opted-in LOCAL demo signer only. Verification never reads private keys.
 import { execFileSync } from "node:child_process"
 import { resolve } from "node:path"
 import type { SignedOperation } from "../modules/interfacer/signed-envelope"

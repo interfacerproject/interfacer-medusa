@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Interfacer × Medusa — local marketplace</title>
+  <link rel="stylesheet" href="/dev/store/assets/style.css">
+  <script type="module" src="/dev/store/assets/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#catalog">Skip to catalog</a>
+  <div class="dev-banner"><strong>LOCAL DEV — fixture/dev keys, not production</strong><br>
+    Dev-only signer · Manual/test payments · Local REA sink &amp; key→Person resolver stand-ins
+  </div>
+  <header>
+    <h1>Interfacer × Medusa</h1>
+    <p>Buy a resource. Or commission a build. Follow either order to its ValueFlows receipt.</p>
+    <nav aria-label="Marketplace"><a href="#catalog">Catalog</a><a href="#build">Build</a><a href="#receipts">Receipts</a></nav>
+    <p id="identity" class="muted">Connecting to the bound demo customer…</p>
+  </header>
+  <main>
+    <p id="status" role="status">Loading local fixtures…</p>
+    <p id="error" role="alert" hidden></p>
+    <button id="retry" hidden>Retry connection</button>
+    <section id="catalog" aria-labelledby="catalog-title">
+      <h2 id="catalog-title">Catalog</h2>
+      <p>Published resource-backed products, priced in EUR. One unit per resource, local collection; no shipping charge.</p>
+      <div id="products"></div>
+    </section>
+    <section id="build" aria-labelledby="build-title">
+      <h2 id="build-title">Build from a design</h2>
+      <p>Match the requirements to a compatible service. One quoted lot, one supplier, paid upfront with the test provider.</p>
+      <div id="designs"></div>
+    </section>
+    <section id="receipts" aria-labelledby="receipts-title">
+      <h2 id="receipts-title">ValueFlows receipts</h2>
+      <p>LOCAL STAND-IN — persisted VF facts, not a live Zenflows ledger. Payment alone creates no receipt. No successor passport is minted.</p>
+      <button id="refresh-receipts">Refresh receipts</button>
+      <div id="receipt-list"></div>
+    </section>
+  </main>
+  <footer>Disposable demo login and signing keys are intentionally local. Do not expose, tunnel or deploy this server.</footer>
+</body>
+</html>

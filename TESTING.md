@@ -1,11 +1,283 @@
 # Test the marketplace locally
 
+> **Start with [P6b — Storefront + end-to-end](#p6b--storefront--end-to-end)** for the
+> final browser demo, `dev:up` / `dev:down`, and the complete `test:all` suite.
+>
 > **P6a supersedes P0–P5 auth examples below:** protected writes now require real
 > Ed25519 envelopes. Existing harnesses sign automatically; old unsigned curls
 > are historical evidence, not current instructions. See
 > [P6a — Real signed-envelope auth](#p6a--real-signed-envelope-auth).
 
-## One command
+## P6b — Storefront + end-to-end
+
+**LOCAL DEV — fixture/dev keys, not production.** The REA receipt store and
+key→Person resolver are labeled local stand-ins. Real Ed25519 verification,
+native Medusa commerce and PostgreSQL persistence are used; no live Zenflows
+ledger, production key or real-money payment is involved.
+
+### One run command
+
+From this directory, with Docker running, **Node 24** and **Python 3** installed:
+
+```bash
+npm run dev:up
+```
+
+Wait for:
+
+```text
+STOREFRONT READY: http://localhost:9000/dev/store
+```
+
+Open that URL. No additional seed, API key, login, build or signing command is
+needed. Startup installs locked Medusa dependencies if missing, typechecks,
+migrates, seeds designs/services, registers a real Medusa demo account and binds
+its local Person. Merchant projection/publication/checkout setup use P6a's real
+signing helper. Each boot creates **three fresh one-unit resources** and a fresh
+demo buyer; it never replenishes a sold/reserved resource. Older immutable data
+is retained, but the page's Store product query shows this run's published demo
+resources, not the accumulated regression-test catalog. Only DPP references are
+shown; private passport sections/attachments are not exposed.
+
+Default demo DB: **interfacer-medusa-p6b-dev-db**, PostgreSQL `15-alpine`,
+**127.0.0.1:55437**, database `interfacer_medusa`. Medusa binds **127.0.0.1:9000**.
+Only a container created/labeled for this project can be reused by the new
+supervisor. To select a different owned container/port, set `INTERFACER_DB_CONTAINER`,
+`INTERFACER_DB_PORT` and a matching `DATABASE_URL` as in P6a; do not point at a
+shared/production DB. First installation needs npm/Docker registry access.
+
+Stop with **Ctrl-C**, or from another terminal in this directory:
+
+```bash
+npm run dev:down
+```
+
+`dev:down` verifies the saved supervisor PID's start/command identity, signals
+that PID, waits for cleanup, and does not kill by process name/port. The
+supervisor stops each owned Medusa PID and its DB, even on bootstrap failure or
+normal termination. Data is retained. `dev:down` with no owned runtime is a no-op;
+a stale/PID-reused runtime is refused rather than signaling an unrelated process.
+Logs: `.tmp/dev-store-{setup,server}.log`; disposable context/login:
+`.tmp/storefront-demo.json`; bootstrap's real signed curl transcript:
+`.tmp/dev-store-bootstrap.md`. Keep `.tmp/` local.
+
+### Exact browser click paths
+
+- **Stock:** Catalog → inspect title / EUR **19.95** / resource / **DPP reference**
+  → **Buy** on an available unit → native order + captured manual/test payment
+  → **Order & passport evidence** (optional) → **Mark delivered** →
+  **VF receipt · transfer** → **Full local ValueFlows receipt**. Quantity **1**;
+  native pickup fulfillment/delivery consumes the allocation. No carrier/shipping
+  charge or successor passport is created.
+- **Build:** Build from a design → **PETG organizer — synthetic design** →
+  **Match** → compatible **Standard FDM — synthetic service**, EUR **19** for
+  a complete lot of **2 pieces** (Large precise FDM is EUR 36) → inspect fixed
+  quote/capabilities/hash and incompatible-service reasons → **Buy build** →
+  native order + actually captured upfront test payment → **Mark produced** →
+  **VF receipt · produce**, including design/service/origin-DPP/quote/hash.
+  Exactly one supplier/quoted lot. The PLA panel can match, but purchase is
+  disabled because it has no origin DPP.
+- Both journeys end in the shared **ValueFlows receipts** section, filtered to
+  this demo buyer. Reload retains native orders and receipts; click **Match**
+  again to redisplay a prior build. Saved cart/order IDs allow action retries
+  without intentionally starting another purchase. Each fresh boot starts a new
+  demo view; stop/start for more synthetic stock, never reset sold stock.
+
+The banner, signer responses and receipt section explicitly identify local keys
+and stand-ins. Payment alone never writes a receipt. Delivery and production
+are explicit physical-milestone assertions by disposable dev actors, not proof
+from a carrier, machine or remote supplier.
+
+### Browser/API implementation and safety boundary
+
+- `GET /dev/store` serves guarded HTML; `/dev/store/assets/{app.js,style.css}`
+  serves only those fixed files. No bundler/CDN/third-party client dependencies.
+- `GET /dev/store/config` intentionally discloses this run's **disposable demo
+  customer login**, public commerce context and selected product references.
+  The browser logs in through the real `/auth/customer/emailpass` endpoint.
+- `POST /dev/store/sign` is a **LOCAL DEV SIGNER**, separately enabled by
+  `INTERFACER_DEV_STOREFRONT=true` (set by `dev:up`). Actions `checkout`, `build`,
+  `deliver`, `produce`, `capture` accept only the necessary cart/quote/order IDs.
+  They resolve canonical params/controller/buyer/provider on the server, require
+  the authenticated demo customer, and invoke P6a's `scripts/sign.cjs` helper.
+  Callers cannot supply arbitrary operations, Person IDs, prices, keys or paths.
+  Responses include the actual `{envelope,signature}` and encoded header, never
+  private keys. The client submits it as `X-Interfacer-Auth` to the independently
+  verifying business endpoint. Existing signed-envelope checks remain unchanged.
+- Native Store cart/customer/line/payment-collection/session/completion/order
+  APIs are reused, along with the existing dev match/accept/deliver/produce APIs.
+  EUR prices and checkout evidence come from persisted server facts.
+- **New, explicitly dev-only** `POST /dev/store/capture {orderId}` adapts the
+  existing native `capturePaymentWorkflow`; this is NOT an invented built-in
+  Medusa Store capture API. It authenticates the demo customer, checks order
+  ownership/manual provider, and verifies a fresh real buyer signature for
+  `commerce.order.dev.capture` / `{order_id}` before capture. The UI captures
+  upfront before allowing production. Capture is financial only, no REA write.
+- All new routes require signed local mode **and** the separate storefront flag,
+  deny production, reject non-loopback sockets, unexpected Host, cross-site or
+  non-same-origin requests. No-store, CSP (self scripts/styles/connect only,
+  no frames), no-referrer and nosniff headers are applied. Shared dev/Store CORS
+  now also allows exact `http://localhost:9000` / `http://127.0.0.1:9000` origins.
+  The signer is stricter than CORS: other GUI origins cannot use it.
+- The exposed demo login/fixture keys mean this is **not safe to expose publicly**.
+  No claim of production authorization, real identity enrollment or wallet UX.
+  P6a's five-minute/retryable-nonce limits still apply: no durable anti-replay,
+  audience, revocation, delegation, remote registry or Zenroom wire proof.
+
+### All harnesses, including HTTP and driven browser
+
+Stop the interactive demo before running tests. One command:
+
+```bash
+npm run test:all
+```
+
+Runs **sequentially, fail-fast**: `npm test`, `test:http`, `test:p1`, `test:p2`,
+`test:p3`, `test:p4`, `test:p5`, `test:p6a`, `test:p6b`. Every earlier harness
+still typechecks/migrates and cleans up its own server sessions and selected DB
+between suites. The final P6b harness boots the **same `npm run dev:up`**, waits
+for fixture readiness, curls `/dev/store` (200), checks assets/CSP/guards, and
+uses the page's dev signer + real business APIs for stock buy/capture/deliver
+and build match/buy/capture/produce. It checks unsigned/forged refusal,
+no receipt on payment, produced-before-capture refusal, receipt facts and
+idempotent milestone retries. P0/P4 direct-handler tests additionally verify
+production/disabled-mode/flag/Host/socket/origin denial before files/storage.
+
+It then drives real **Chromium** at **1440×1000** and **390×844**: Buy → Mark
+delivered, and Match → Buy build → Mark produced. No route mocking, fabricated
+order or inserted browser signature. Tests observe the actual signature headers,
+check no receipt before each milestone, persisted order/receipt recovery after
+reload/re-match, no page errors and no horizontal overflow. Native inventory
+prevents reusing a consumed unit. Finally the harness runs **dev:down** and
+checks port cleanup.
+
+Test default DB: **interfacer-medusa-p6b-test-db**, loopback **55438**; separate
+from the browser demo and every pre-existing phase/sibling container. New
+containers carry `interfacer.medusa.root=<this project path>` in addition to the
+existing spike ownership label. Data is retained. Standalone `test:p6b` uses the
+same test default. Root Playwright **1.56.1** is locked in `package-lock.json`;
+the P6b harness installs it with `npm ci` if missing and installs its Chromium
+headless shell under **.cache/ms-playwright**, not a global browser cache.
+First browser run needs download access; later runs reuse it.
+
+Reproduce just the final HTTP/browser tranche:
+
+```bash
+npm run test:p6b
+```
+
+Against a deliberately running demo, the already-executed curl recipe is also
+replayable with `python3 scripts/p6b-probe.py --live` (consumes demo unit 1;
+does not own/stop that interactive server). Normally use the self-cleaning
+npm harness instead.
+
+### Actual P6b execution and receipts
+
+Executed **2026-10-22 UTC**, Node **24.19.0**, npm **11.17.0**, Medusa
+**2.10.3**, Playwright **1.56.1** / Chromium headless shell **141.0.7390.37**.
+First boot used a newly created `interfacer-medusa-p6b-dev-db`; the full suite
+used the separately created `interfacer-medusa-p6b-test-db`. No pre-existing
+phase/sibling container was started, stopped or modified.
+
+Actually ran `npm run dev:up`, then `python3 scripts/p6b-probe.py --live`
+against that running command, observing storefront **200**, one signed stock
+buy/deliver and one signed build/produce with real receipts. Stopped it with
+`npm run dev:down`. Then standalone `test:p6b` passed, followed by the complete
+**`npm run test:all` green, all nine suites** (including another real dev:up,
+curl run, desktop/mobile browser clicks, reload/re-match and dev:down).
+
+Selected verbatim final-run output:
+
+```text
+curl GET /dev/store -> 200
+curl GET /dev/store -> 200
+curl GET /dev/store/assets/app.js -> 200
+curl GET /dev/store/assets/style.css -> 200
+curl GET /dev/store/assets/unknown -> 404
+curl GET /dev/store -> 403
+curl GET /dev/store -> 403
+PASS P6b HTTP: page/assets 200; real signed stock + build, native capture, no event on payment, milestones + idempotent VF receipts; unsigned/forged refused
+PASS P6b BROWSER desktop: clicked Buy → Mark delivered → ifrea_01M5GP3S5CV3WPMDZNHJRAD3MZ; Match → Buy build → Mark produced → ifrea_01M5GP3T650QJ9VJY7G62E2220; reload + no horizontal overflow/errors
+PASS P6b BROWSER mobile: clicked Buy → Mark delivered → ifrea_01M5GP3W27DRXTQZBXAG9R40SW; Match → Buy build → Mark produced → ifrea_01M5GP3X3E0D2EP1RJQE2WQJFC; reload + no horizontal overflow/errors
+ALL P6b CHECKS PASSED: curl + driven Chromium desktop/mobile journeys; dev:up/dev:down + per-PID cleanup
+ALL HARNESS SUITES PASSED (9/9); no owned server or database left running.
+```
+
+The two **actual curl-journey receipts** from the final run (each milestone first
+returned **201**, retry **200** with the identical persisted receipt; these are
+local normalized VF facts, not a fabricated remote GraphQL response):
+
+```json
+[
+  {
+    "id": "ifrea_01M5GP3P2P7SWFC0JY5HSKJP8P",
+    "action": "transfer",
+    "design_id": null,
+    "service_id": null,
+    "origin_dpp_id": null,
+    "quote_id": null,
+    "quote_hash": null,
+    "provider_id": "01JTESTPERSON00000000000001",
+    "receiver_id": "p6b-demo-buyer-842d4065e45f",
+    "resource_id": "01JTESTRESOURCE000000000001-p6b-842d4065e45f-1",
+    "dpp_id": "dpp-sample-0001-p6b-842d4065e45f-1",
+    "order_id": "order_01M5GP3NFBD8XCEMH9R4VJN56K",
+    "quantity": 1,
+    "has_point_in_time": "2026-10-22T02:12:44.728Z",
+    "created_at": "2026-10-22T02:12:44.759Z",
+    "updated_at": "2026-10-22T02:12:44.759Z",
+    "deleted_at": null
+  },
+  {
+    "id": "ifrea_01M5GP3Q51FVFDNRDF4ZAAFSKS",
+    "action": "produce",
+    "design_id": "ifdes_p4_organizer",
+    "service_id": "ifsvc_p4_standard",
+    "origin_dpp_id": "dpp-p4-origin-demo",
+    "quote_id": "ifquote_01M5GNPP73G3YFHXSFYVRSGC5N",
+    "quote_hash": "2e12643e6ad3361a70000e311412086d99cf9fa7d381c9ef16b8da67f949f8d4",
+    "provider_id": "p4-demo-provider-standard",
+    "receiver_id": "p6b-demo-buyer-842d4065e45f",
+    "resource_id": "ifdes_p4_organizer",
+    "dpp_id": "dpp-p4-origin-demo",
+    "order_id": "order_01M5GP3PQPWD8BDZFKJCXZXHTG",
+    "quantity": 2,
+    "has_point_in_time": "2026-10-22T02:12:45.856Z",
+    "created_at": "2026-10-22T02:12:45.857Z",
+    "updated_at": "2026-10-22T02:12:45.857Z",
+    "deleted_at": null
+  }
+]
+```
+
+Full executed curl commands, real signature headers and raw response bodies:
+`.tmp/p6b-transcript.md`. To reproduce them, run `npm run test:p6b`; each
+protected request calls `/dev/store/sign` for fresh material rather than
+replaying expired evidence. The initial interactive run's console remains in
+`.tmp/p6b-manual-http.log` / `.tmp/p6b-dev-up.log`; final all-suite console:
+`.tmp/p6b-test-all.log`, with one `.tmp/all-test*.log` per harness.
+Bootstrap server/command output: `.tmp/p6b-up.log` and
+`.tmp/dev-store-bootstrap.md`.
+
+Browser receipts and observed signed operation names:
+`.tmp/p6b-browser-results.json`; screenshots (opened/reviewed):
+`.tmp/p6b-desktop.png` and `.tmp/p6b-mobile.png`. Mechanical design scan is in
+`.tmp/p6b-design-detect.json`; its flat-type warning was a scanner false
+positive from resolving the route-served stylesheet as a filesystem URL, not a
+rendered defect. The actual stylesheet and both rendered widths were checked.
+
+Cleanup observation at **2026-10-22T02:13:18Z**: `lsof` found **no listener**
+on **9000 or 19000**; both P6b DBs reported `exited`; there was no
+`.tmp/dev-store-runtime.json`, Medusa develop process, storefront supervisor or
+owned Chromium headless process. All server shutdowns use per-PID signals;
+no killall/kill-by-port, git command, sibling inspection, production key or live
+Zenflows/DPP write was used. Data and test evidence are retained locally.
+
+See [final status](docs/marketplace-STATUS.md) for real-versus-local boundaries.
+Historical phase commands and output below remain useful API/source evidence;
+they are not the new browser launch instructions.
+
+## Original projection harness
 
 From this directory, with Docker running, **Node 24.19.0 / npm 11.17.0** (tested) and Python 3 installed:
 

@@ -8,9 +8,20 @@ Medusa v2 instance, and the Interfacer Commerce integration module.
   (architecture, data model, design→services matching, phased plan).
   §16 records the first-spike decisions.
 
-Phase 0 and a locally tested first spike are implemented with Medusa **2.10.3**.
-Run `npm test` to project a sample resource + passport into a draft with one
-variant and an immutable, idempotent module-owned mapping.
+The P0–P6b **local marketplace** runs on Medusa **2.10.3**. With Docker,
+Node 24 and Python 3 available:
+
+```bash
+npm run dev:up    # http://localhost:9000/dev/store (foreground)
+npm run dev:down  # from another terminal, or Ctrl-C in the first
+npm run test:all  # all nine harnesses, including real browser journeys
+```
+
+**LOCAL DEV — fixture/dev keys, not production.** Both stock delivery and build
+production yield persisted ValueFlows receipts; the REA sink and key→Person
+resolver remain labeled local stand-ins. [Final status and click paths](docs/marketplace-STATUS.md).
+[Run, evidence, cleanup and limits](TESTING.md#p6b--storefront--end-to-end).
+`npm test` alone still runs the original projection/immutability harness.
 
 P6a authorization uses **real Ed25519 signed envelopes** on commerce writes.
 Key → Person resolution remains a **LOCAL stand-in**, not a live Zenflows PDP.
@@ -40,4 +51,5 @@ and a local REA sink; P6a signs their actor operations too.
 - [TESTING.md](TESTING.md#p1--storefront--publish) — P1 commands, publishable keys, real responses and limits.
 - [P1 findings](docs/phase1-findings.md) — verified 2.10.3 commerce APIs.
 - [Phase 0 findings](docs/phase0-findings.md) — version gate and source evidence.
-- [Status](docs/phase0-STATUS.md) — concise handoff.
+- [Final status](docs/marketplace-STATUS.md) — real/local boundaries and browser journeys.
+- [Historical Phase 0 status](docs/phase0-STATUS.md).
