@@ -3,7 +3,7 @@ import { DEV_GUI_ORIGINS } from "../../../dev-origins"
 
 // Medusa 2.10.3 only automatically applies configured CORS to /store, /admin,
 // and /auth. This custom /dev namespace needs explicit CORS and preflight.
-// CORS is NOT authentication: callers can assert any fixture controller.
+// CORS is NOT authentication. Protected commerce operations verify Ed25519 separately.
 export function allowLocalRequest(req: MedusaRequest, res: MedusaResponse): boolean {
   res.setHeader("Cache-Control", "no-store")
   res.vary("Origin")
@@ -11,9 +11,9 @@ export function allowLocalRequest(req: MedusaRequest, res: MedusaResponse): bool
   if (origin && DEV_GUI_ORIGINS.includes(origin)) {
     res.setHeader("Access-Control-Allow-Origin", origin)
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Interfacer-Auth")
   }
-  if (process.env.INTERFACER_AUTH_MODE !== "fixture-controller-stub" ||
+  if (process.env.INTERFACER_AUTH_MODE !== "signed-envelope-local" ||
       process.env.NODE_ENV === "production") {
     res.status(403).json({ reason: "local_fixture_mode_required" })
     return false

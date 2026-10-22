@@ -4,7 +4,8 @@ import { Modules, ProductStatus } from "@medusajs/framework/utils"
 import { createProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
-import type { ControllerCheck, Resource } from "./fixture-controller-check"
+import { verifySignedOperation, type Resource } from "./signed-envelope"
+import { requireLocalCommerce } from "./commerce-context"
 
 export interface Passport { ID: string; ProductID: string }
 
@@ -30,16 +31,18 @@ export async function projectResource(
   container: MedusaContainer,
   resource: Resource,
   passport: Passport,
-  controllerCheck: ControllerCheck,
+  auth: unknown,
   // Failure injection is in-process only, used by the CLI acceptance test.
   afterProduct?: () => void
 ) {
+  requireLocalCommerce()
   required(resource?.id)
   required(resource?.name)
   required(resource?.primaryAccountable?.id)
   required(passport?.ID)
   if (passport?.ProductID !== resource.id) throw new Error("passport_binding_mismatch")
 
+  const subject = verifySignedOperation(auth, "commerce.listing.create", { resource, dpp: passport }, resource.primaryAccountable.id)
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   const products = container.resolve<IProductModuleService>(Modules.PRODUCT)
   const operationKey = sourceHash(["interfacer-local-v1", resource.id, "default"])
@@ -47,22 +50,12 @@ export async function projectResource(
   const dpp = sourceHash(passport)
 
   return integration.withProjectionLock(operationKey, async () => {
-    // Even an idempotent retry must be authorized; never trust a caller's header,
-    // matching email, DPP creator, or commerce admin identity as resource control.
-    let decision
-    try { decision = await controllerCheck(resource) }
-    catch { throw new Error("authorization_unavailable") }
-    if (!decision || !Array.isArray(decision.obligations)) throw new Error("authorization_unavailable")
-    if (decision.allow !== true || decision.subject !== resource.primaryAccountable.id) throw new Error("authorization_denied")
-    if (decision.obligations.length) throw new Error("unsupported_obligations")
-    if (typeof decision.policyVersion !== "string" || !decision.policyVersion ||
-        typeof decision.permissionEpoch !== "string" || !decision.permissionEpoch) throw new Error("authorization_unavailable")
-
+    // Every retry was verified before entering the lock; no injectable allow decision.
     const identity = {
       operation_key: operationKey,
       catalog_resource_id: resource.id,
       source_dpp_id: passport.ID,
-      seller_agent_id: decision.subject,
+      seller_agent_id: subject,
       source_snapshot_hash: source,
       passport_snapshot_hash: dpp,
     }
@@ -132,8 +125,8 @@ export async function projectResource(
       medusa_variant_id: product.variants[0].id,
       configuration_key: "default",
       approved_revision: source,
-      policy_version: decision.policyVersion,
-      permission_epoch: decision.permissionEpoch,
+      policy_version: "local-ed25519-envelope-v1",
+      permission_epoch: "local-keyring-v1",
       status: "draft",
     })
     return { created: !recovered, recovered, binding, product }

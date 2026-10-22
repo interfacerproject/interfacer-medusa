@@ -1,3 +1,4 @@
+import { verifySignedOperation } from "./signed-envelope"
 import type { IFulfillmentModuleService, MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, MedusaError, Modules } from "@medusajs/framework/utils"
 import { createOrderFulfillmentWorkflow, markOrderFulfillmentAsDeliveredWorkflow } from "@medusajs/medusa/core-flows"
@@ -74,12 +75,13 @@ async function localCollectionOption(container: MedusaContainer) {
 // Guarded dev trigger, deliberately NOT a payment/order.placed subscriber.
 // Retrying after delivery committed but before the receipt write resumes from
 // persisted delivered_at; it does not deliver twice. Locks span workflow commits.
-export async function deliverOrder(container: MedusaContainer, orderId: string) {
+export async function deliverOrder(container: MedusaContainer, orderId: string, auth?: unknown) {
   requireLocalCommerce()
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   return integration.withProjectionLock("interfacer-delivery-v1:" + orderId, async () => {
     let order = await readOrder(container, orderId)
     const { line, binding, identity } = await receiptFacts(container, order)
+    verifySignedOperation(auth, "commerce.order.deliver", { order_id: orderId }, binding.seller_agent_id)
     if (line.requires_shipping) refuse("interfacer_local_collection_only")
     let active = (order.fulfillments ?? []).filter(f => !f.canceled_at)
     if (active.length > 1) refuse("interfacer_fulfillment_reconciliation_required")

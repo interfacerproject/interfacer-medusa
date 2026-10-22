@@ -1,0 +1,6 @@
+{
+  "01JTESTPERSON00000000000001": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAMebv2AwAOWmLM4vNVw++l07xw+zs97SrnlvWQKtBYwE=\n-----END PUBLIC KEY-----\n",
+  "p4-demo-provider-standard": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAuuYoQ6C55p8ljvuREIMgG3/N8ygPsm+W9WJFoESH5/Y=\n-----END PUBLIC KEY-----\n",
+  "p4-demo-provider-large": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA7EMh4z6y0rdqk7DgzVCqOjOT55uak8XotkL67bzHkHg=\n-----END PUBLIC KEY-----\n",
+  "some-other-person": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAuDEX4RgHkAcVsE4cGBFyTyQba0MoNr2/IA2crHBJbgs=\n-----END PUBLIC KEY-----\n"
+}

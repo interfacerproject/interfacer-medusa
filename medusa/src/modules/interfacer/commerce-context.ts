@@ -13,7 +13,7 @@ import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
 
 export function requireLocalCommerce() {
-  if (process.env.INTERFACER_AUTH_MODE !== "fixture-controller-stub" ||
+  if (process.env.INTERFACER_AUTH_MODE !== "signed-envelope-local" ||
       process.env.NODE_ENV === "production") throw new Error("local_fixture_mode_required")
 }
 

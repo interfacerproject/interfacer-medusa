@@ -41,12 +41,12 @@ export async function verifyHttpGuards() {
       assert.throws(() => validatePriceEUR(value), /invalid_price/)
     }
     for (const value of [0.01, 19.95, 20, 1000000]) validatePriceEUR(value)
-    for (const mode of [undefined, "", "other", "fixture-controller-stub"]) {
+    for (const mode of [undefined, "", "other", "fixture-controller-stub", "signed-envelope-local"]) {
       for (const env of ["development", "production"]) {
         if (mode === undefined) delete process.env.INTERFACER_AUTH_MODE
         else process.env.INTERFACER_AUTH_MODE = mode
         process.env.NODE_ENV = env
-        if (mode === "fixture-controller-stub" && env !== "production") continue
+        if (mode === "signed-envelope-local" && env !== "production") continue
         for (const handler of guarded) {
           const response = await invoke(handler, "http://localhost:3104")
           assert.equal(response.status, 403)
@@ -54,7 +54,7 @@ export async function verifyHttpGuards() {
         }
       }
     }
-    process.env.INTERFACER_AUTH_MODE = "fixture-controller-stub"
+    process.env.INTERFACER_AUTH_MODE = "signed-envelope-local"
     process.env.NODE_ENV = "development"
     for (const handler of guarded) {
       assert.equal((await invoke(handler, "https://example.org")).status, 403)

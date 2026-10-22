@@ -19,7 +19,7 @@ def rows(oid):
     return json.loads(p2.sql(f"SELECT coalesce(json_agg(r), '[]') FROM interfacer_rea_receipt r WHERE order_id='{oid}'"))
 
 
-def checks():
+def checks(before_accept=None):
     context = p2.post("/dev/interfacer/commerce")
     p2.key = ["-H", "x-publishable-api-key: " + context["publishable_key"]]
     matches = p2.post("/dev/interfacer/match", {"designId": "ifdes_p4_organizer"})["matches"]
@@ -48,6 +48,8 @@ def checks():
     assert accept(cid, customer_auth=unauth, expected=400)["message"] == "interfacer_cart_customer_mismatch"
     accept(cid, expected=400, serviceId=other_quote["service_id"])
     accept(cid, expected=400, priceEUR=0.01)
+    if before_accept:
+        before_accept(cid, quote, auth)
     accepted = accept(cid)
     assert accept(cid) == accepted
     assert accept(cid, other_quote, expected=400)["message"] == "build_quote_swap_forbidden"

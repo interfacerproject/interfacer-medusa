@@ -19,7 +19,9 @@ def note(message):
     print(message, flush=True)
 
 
-def curl(path, *args, expected=200):
+def curl(path, *args, expected=200, auto_sign=True):
+    if auto_sign:
+        args = (*args, *import_module("signed-requests").curl_auth(path, args))
     command = ["curl", "--silent", "--show-error", "--max-time", "30",
                "--write-out", "\nHTTP %{http_code}\n", *args, base + path]
     output = subprocess.check_output(command, cwd=root, text=True)

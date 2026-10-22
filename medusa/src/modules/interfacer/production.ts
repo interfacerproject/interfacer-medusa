@@ -1,3 +1,4 @@
+import { verifySignedOperation } from "./signed-envelope"
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils"
 import { INTERFACER_MODULE } from "./index"
@@ -9,7 +10,7 @@ import { termsHash } from "./matching"
 // Explicit admin/supplier "produced" assertion, not a payment subscriber and not
 // a fabricated native fulfillment/delivery. The immutable receipt IS the local
 // production milestone; insert and idempotency fact are the same DB commit.
-export async function produceBuild(container: MedusaContainer, orderId: string) {
+export async function produceBuild(container: MedusaContainer, orderId: string, auth?: unknown) {
   requireLocalCommerce()
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   return integration.withProjectionLock("interfacer-build-produce:" + orderId, async () => {
@@ -24,6 +25,7 @@ export async function produceBuild(container: MedusaContainer, orderId: string) 
     const [offer] = await integration.listBuildOffers({ medusa_variant_id: line.variant_id ?? "" })
     if (!offer || offer.medusa_product_id !== line.product_id) buildRefuse("build_offer_required")
     const quote = await readBuildQuote(integration, offer.quote_id)
+    verifySignedOperation(auth, "commerce.order.produce", { order_id: orderId }, quote.provider_person_id)
     const [identity] = await integration.listIdentityLinks({ customer_id: order.customer_id ?? "" })
     const purchase = order.metadata?.interfacer_purchase as Record<string, unknown> | undefined
     const [acceptance] = await integration.listBuildAcceptances({ id: String(purchase?.acceptance_id ?? "") })

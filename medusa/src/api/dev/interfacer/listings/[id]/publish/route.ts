@@ -1,4 +1,5 @@
 // LOCAL TESTING ONLY: this merchant price seed is never a Store API write.
+import { authFromHeader, AUTH_HEADER } from "../../../../../../modules/interfacer/signed-envelope"
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { allowLocalRequest } from "../../../local-guard"
 import { publishListing } from "../../../../../../modules/interfacer/publish-listing"
@@ -17,7 +18,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
   try {
-    res.json(await publishListing(req.scope, req.params.id, body.priceEUR))
+    res.json(await publishListing(req.scope, req.params.id, body.priceEUR, authFromHeader(req.headers[AUTH_HEADER])))
   } catch (error) {
     const reason = error instanceof Error ? error.message : ""
     const statuses: Record<string, number> = {

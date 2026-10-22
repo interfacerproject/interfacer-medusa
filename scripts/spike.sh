@@ -49,9 +49,11 @@ setup() {
   npm --prefix medusa run typecheck
   npm --prefix medusa run db:migrate
 }
-fixture_env() {
-  export INTERFACER_AUTH_MODE=fixture-controller-stub
-  export INTERFACER_FIXTURE_PERSON="${INTERFACER_FIXTURE_PERSON:-01JTESTPERSON00000000000001}"
+signed_local_env() {
+  export INTERFACER_AUTH_MODE=signed-envelope-local
+  export INTERFACER_KEYRING_PATH="${INTERFACER_KEYRING_PATH:-$ROOT/.tmp/auth-public-keyring.json}"
+  node scripts/sign.cjs --seed-person 01JTESTPERSON00000000000001
+  export INTERFACER_SIGNING_PERSON="${INTERFACER_SIGNING_PERSON:-01JTESTPERSON00000000000001}"
 }
 case "${1:-test}" in
   setup) setup ;;
@@ -59,7 +61,7 @@ case "${1:-test}" in
     # This command owns the brief server and stops only this labeled DB.
     trap db_stop EXIT
     setup
-    fixture_env
+    signed_local_env
     npm --prefix medusa run verify
     python3 scripts/probe.py
     echo "PASS finished; HTTP server and spike DB stopped (data retained)."
@@ -67,13 +69,22 @@ case "${1:-test}" in
   test:http)
     trap db_stop EXIT
     setup
-    fixture_env
+    signed_local_env
     python3 scripts/http-probe.py
+    ;;
+  test:p6a)
+    trap db_stop EXIT
+    setup
+    signed_local_env
+    (cd medusa && ./node_modules/.bin/ts-node src/tests/signed-envelope.test.ts)
+    (cd medusa && ./node_modules/.bin/medusa exec ./src/scripts/seed-matching.ts)
+    python3 scripts/p6a-probe.py
+    echo "PASS P6a finished; HTTP servers and owned DB stopped (data retained)."
     ;;
   test:p5)
     trap db_stop EXIT
     setup
-    fixture_env
+    signed_local_env
     (cd medusa && ./node_modules/.bin/medusa exec ./src/scripts/seed-matching.ts)
     python3 scripts/p5-probe.py
     echo "PASS P5 finished; HTTP server and spike DB stopped (data retained)."
@@ -82,7 +93,7 @@ case "${1:-test}" in
     trap db_stop EXIT
     setup
     (cd medusa && ./node_modules/.bin/ts-node src/tests/matching.test.ts)
-    fixture_env
+    signed_local_env
     (cd medusa && ./node_modules/.bin/medusa exec ./src/scripts/seed-matching.ts)
     python3 scripts/p4-probe.py
     (cd medusa && ./node_modules/.bin/medusa exec ./src/scripts/verify-p4.ts)
@@ -91,48 +102,48 @@ case "${1:-test}" in
   seed:matching)
     trap db_stop EXIT
     setup
-    fixture_env
+    signed_local_env
     (cd medusa && ./node_modules/.bin/medusa exec ./src/scripts/seed-matching.ts)
     ;;
   test:p3)
     trap db_stop EXIT
     setup
-    fixture_env
+    signed_local_env
     python3 scripts/p3-probe.py
     echo "PASS P3 finished; HTTP server and spike DB stopped (data retained)."
     ;;
   test:p2)
     trap db_stop EXIT
     setup
-    fixture_env
+    signed_local_env
     python3 scripts/p2-probe.py
     echo "PASS P2 finished; HTTP server and spike DB stopped (data retained)."
     ;;
   test:p1)
     trap db_stop EXIT
     setup
-    fixture_env
+    signed_local_env
     python3 scripts/p1-probe.py
     echo "PASS P1 finished; HTTP server and spike DB stopped (data retained)."
     ;;
   seed:commerce|publish)
     trap db_stop EXIT
     setup
-    fixture_env
+    signed_local_env
     npm --prefix medusa run "$1"
     ;;
   start)
     # develop may normalize NODE_ENV; reject production before launching it.
     [[ "${NODE_ENV:-}" != production ]] || { echo "Refusing local fixture API in production" >&2; exit 1; }
     db_up
-    fixture_env
+    signed_local_env
     # Foreground; Ctrl-C stops the app. Run 'stop' separately for the DB.
     cd medusa
     exec ./node_modules/.bin/medusa develop --host 127.0.0.1 --port 9000 --no-types
     ;;
   project)
     db_up
-    fixture_env
+    signed_local_env
     npm --prefix medusa run project
     ;;
   inspect)
@@ -140,5 +151,5 @@ case "${1:-test}" in
     npm --prefix medusa run inspect
     ;;
   stop) db_stop ;;
-  *) echo "Usage: bash scripts/spike.sh {test|test:http|test:p1|test:p2|test:p3|test:p4|test:p5|seed:matching|seed:commerce|publish|setup|start|project|inspect|stop}" >&2; exit 2 ;;
+  *) echo "Usage: bash scripts/spike.sh {test|test:http|test:p1|test:p2|test:p3|test:p4|test:p5|test:p6a|seed:matching|seed:commerce|publish|setup|start|project|inspect|stop}" >&2; exit 2 ;;
 esac

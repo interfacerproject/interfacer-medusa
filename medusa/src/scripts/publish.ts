@@ -3,6 +3,7 @@ import type InterfacerService from "../modules/interfacer/service"
 import { INTERFACER_MODULE } from "../modules/interfacer"
 import { publishListing } from "../modules/interfacer/publish-listing"
 import { fixtures } from "./fixtures"
+import { signLocalOperation } from "./sign-local-operation"
 
 export default async function publish({ container }: ExecArgs) {
   let id = process.env.LISTING_ID
@@ -12,5 +13,9 @@ export default async function publish({ container }: ExecArgs) {
     id = binding?.id
   }
   if (!id) throw new Error("Project the resource first, or provide LISTING_ID (binding id)")
-  console.log(JSON.stringify(await publishListing(container, id, Number(process.env.PRICE_EUR)), null, 2))
+  const service = container.resolve<InterfacerService>(INTERFACER_MODULE)
+  const [binding] = await service.listListingBindings({ id })
+  const priceEUR = Number(process.env.PRICE_EUR)
+  const auth = signLocalOperation("commerce.listing.publish", { listing_id: id, priceEUR }, binding.seller_agent_id)
+  console.log(JSON.stringify(await publishListing(container, id, priceEUR, auth), null, 2))
 }

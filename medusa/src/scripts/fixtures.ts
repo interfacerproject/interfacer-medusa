@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs"
 import { resolve } from "node:path"
-import type { Resource } from "../modules/interfacer/fixture-controller-check"
+import type { Resource } from "../modules/interfacer/signed-envelope"
 import type { Passport } from "../modules/interfacer/project-resource"
 
 export function fixtures(): { resource: Resource; passport: Passport } {

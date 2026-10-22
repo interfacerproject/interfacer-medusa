@@ -1,3 +1,4 @@
+import { verifySignedOperation } from "./signed-envelope"
 import type { MedusaContainer, IProductModuleService } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, Modules, ProductStatus } from "@medusajs/framework/utils"
 import { updateProductsWorkflow } from "@medusajs/medusa/core-flows"
@@ -5,7 +6,7 @@ import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
 import { requireLocalCommerce, seedCommerce } from "./commerce-context"
 
-// Euros in major units (Medusa v2), NOT cents. Only the local-dev merchant seed
+// Euros in major units (Medusa v2), NOT cents. Only a signed controller operation
 // can set this. No Store/cart handler consumes priceEUR or a client unit_price.
 export function validatePriceEUR(value: unknown): asserts value is number {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0 ||
@@ -14,12 +15,13 @@ export function validatePriceEUR(value: unknown): asserts value is number {
   }
 }
 
-export async function publishListing(container: MedusaContainer, listingId: string, priceEUR: unknown) {
+export async function publishListing(container: MedusaContainer, listingId: string, priceEUR: unknown, auth?: unknown) {
   requireLocalCommerce()
   validatePriceEUR(priceEUR)
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   const [binding] = await integration.listListingBindings({ id: listingId })
   if (!binding) throw new Error("listing_not_found")
+  verifySignedOperation(auth, "commerce.listing.publish", { listing_id: listingId, priceEUR }, binding.seller_agent_id)
   const commerce = await seedCommerce(container)
   // Same lock as projection: retries and concurrent publishes cannot add prices.
   return integration.withProjectionLock(binding.operation_key, async () => {

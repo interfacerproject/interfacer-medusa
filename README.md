@@ -12,8 +12,11 @@ Phase 0 and a locally tested first spike are implemented with Medusa **2.10.3**.
 Run `npm test` to project a sample resource + passport into a draft with one
 variant and an immutable, idempotent module-owned mapping.
 
-Authorization uses an explicit **local fixture controller stub**, not live
-registered-key/PDP proof. Only the DPP ID reference is exposed, never passport
+P6a authorization uses **real Ed25519 signed envelopes** on commerce writes.
+Key → Person resolution remains a **LOCAL stand-in**, not a live Zenflows PDP.
+Run `npm run test:p6a` for signed successes and unsigned/forged/wrong-key/
+non-controller refusals across the stock and build flows.
+[Current signing instructions and verified output](TESTING.md#p6a--real-signed-envelope-auth). Only the DPP ID reference is exposed, never passport
 content. For GUI testing,
 `npm start` enables the guarded loopback API at
 `http://localhost:9000/dev/interfacer/listings`; `npm run test:http` verifies it
@@ -29,7 +32,8 @@ P2 adds a local IdentityLink resolver, authenticated checkout, canonical DPP
 order references, native one-unit inventory reservation and manual payment
 authorization. Run `npm run test:p2` for the purchase + unbound-refusal +
 concurrent no-double-sell test; it stops its servers and DB automatically.
-Identity resolution remains development-only; no capture, delivery or REA event.
+Identity resolution remains development-only. P3/P5 add delivery/build production
+and a local REA sink; P6a signs their actor operations too.
 
 - [P2 testing](TESTING.md#p2--identity-bound-checkout) — exact calls, real responses, limits.
 - [P2 findings](docs/phase2-findings.md) — verified auth/cart/payment/inventory APIs.

@@ -1,11 +1,11 @@
-// LOCAL TESTING ONLY: fixture auth, NOT a real PDP/signed envelope. NEVER DEPLOY.
+// Real Ed25519 proof; LOCAL key/controller resolver, NOT a live Zenflows PDP.
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import type { IProductModuleService } from "@medusajs/framework/types"
 import { Modules } from "@medusajs/framework/utils"
 import { allowLocalRequest } from "../local-guard"
 import { INTERFACER_MODULE } from "../../../../modules/interfacer"
 import type InterfacerService from "../../../../modules/interfacer/service"
-import { fixtureControllerCheck, type Resource } from "../../../../modules/interfacer/fixture-controller-check"
+import { authFromHeader, AUTH_HEADER, type Resource } from "../../../../modules/interfacer/signed-envelope"
 import { projectResource, type Passport } from "../../../../modules/interfacer/project-resource"
 
 
@@ -16,19 +16,19 @@ export async function OPTIONS(req: MedusaRequest, res: MedusaResponse) {
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   if (!allowLocalRequest(req, res)) return
-  const body = req.body as { resource?: Resource; dpp?: Passport; actingPersonId?: string } | null
+  const body = req.body as { resource?: Resource; dpp?: Passport } | null
   if (!body || typeof body !== "object" || Array.isArray(body) ||
-      typeof body.actingPersonId !== "string" || !body.actingPersonId.trim() ||
-      body.actingPersonId.length > 1000) {
-    res.status(400).json({ reason: "invalid_body: actingPersonId must be a nonempty string (max 1000)" })
+      !body.resource || !body.dpp) {
+    res.status(400).json({ reason: "invalid_body: resource and dpp required" })
     return
   }
   try {
-    // Same entrypoint and controller seam as the CLI. No caller-supplied policy,
+    // Same signed entrypoint as the CLI. Legacy actingPersonId is NOT authority.
+    // No caller-supplied policy,
     // operation key, product IDs, workflow options, or failure injection.
     const { created, product, binding } = await projectResource(
       req.scope, body.resource as Resource, body.dpp as Passport,
-      fixtureControllerCheck(body.actingPersonId)
+      authFromHeader(req.headers[AUTH_HEADER])
     )
     res.status(created ? 201 : 200).json({
       created,
@@ -44,8 +44,6 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       invalid_source: 400,
       passport_binding_mismatch: 400,
       authorization_denied: 403,
-      authorization_unavailable: 403,
-      unsupported_obligations: 403,
       idempotency_conflict: 409,
       reconciliation_required: 409,
     }

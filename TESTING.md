@@ -1,4 +1,9 @@
-# Test the first slice locally
+# Test the marketplace locally
+
+> **P6a supersedes P0–P5 auth examples below:** protected writes now require real
+> Ed25519 envelopes. Existing harnesses sign automatically; old unsigned curls
+> are historical evidence, not current instructions. See
+> [P6a — Real signed-envelope auth](#p6a--real-signed-envelope-auth).
 
 ## One command
 
@@ -15,7 +20,7 @@ This command starts/creates only the labeled `interfacer-medusa-spike-db` contai
 Expected ending:
 
 ```text
-ALL SPIKE CHECKS PASSED (fixture controller seam; not live PDP proof)
+ALL SPIKE CHECKS PASSED (real Ed25519; local resolver, not live PDP proof)
 PASS live Medusa GET /health: 200 OK
 PASS finished; HTTP server and spike DB stopped (data retained).
 ```
@@ -1635,22 +1640,157 @@ HTTP %{http_code}
 HTTP 201
 ```
 
-## Authorization: explicit local stub, not cryptographic proof
+## P6a — Real signed-envelope auth
 
-`medusa/src/modules/interfacer/fixture-controller-check.ts` is the deliberately named **fixture controller seam**. Root `start`/`project`/`test`/`test:http` scripts explicitly enable `INTERFACER_AUTH_MODE=fixture-controller-stub`. It compares a locally asserted Person with the resource fixture's `primaryAccountable.id`. Only that controller is allowed; seller eligibility is NOT an additional gate.
+**Current authorization:** REAL Ed25519 signatures using Node `node:crypto`
+(**Node 24.19.0 / OpenSSL 3.5.7** tested). The public-key → Person registry is a
+**LOCAL resolver stand-in**, not a live Zenflows PDP. No plaintext default bypass.
+Root scripts now opt into `INTERFACER_AUTH_MODE=signed-envelope-local`; the old
+`fixture-controller-stub` mode and factory cannot authorize commerce writes.
+Production remains refused. P0–P5 transcripts above record historical behavior;
+their unsigned curls/GUI examples are not current authorization instructions.
 
-This models a PDP-returned controller attestation; it does **not prove possession of a registered key**. Anyone with local shell/DB access can impersonate the fixture Person. It is not suitable for untrusted network clients or deployment. The **guarded local-dev HTTP endpoint above** exposes this same stub for GUI testing only; there is no header identity support or fake Zenroom signature format. P2 adds the separate local IdentityLink resolver described above; it is not cryptographic Person proof. Direct `medusa exec` without opt-in fails closed; fixture mode is also rejected under `NODE_ENV=production`.
-
-Demonstrate rejection (after setup; expect nonzero exit and no new rows):
+### Verify and repeat
 
 ```bash
-INTERFACER_FIXTURE_PERSON=some-other-person npm run project
-npm run stop
+# Use a NEW container/port you own; do not modify another project's container.
+export INTERFACER_DB_CONTAINER=interfacer-medusa-p6a-verified-db
+export INTERFACER_DB_PORT=55436
+export DATABASE_URL=postgres://medusa:medusa_local@127.0.0.1:55436/interfacer_medusa
+npm test
+npm run test:http
+npm run test:p1
+npm run test:p2
+npm run test:p3
+npm run test:p4
+npm run test:p5
+npm run test:p6a
 ```
 
-Acceptance tests also cover forged subject/header-like claims, mismatched DPP parent, simulated PDP failure, unsupported obligations, disabled seam, production guard, changed source/DPP hashes, concurrent retries, metadata tampering, and immutable rows. These are **seam tests**, not evidence of real PDP transport, real header handling, or cryptographic compatibility.
+All eight commands actually passed (exit **0**) with the new named container,
+first migrated cold, then reused without resetting sold stock or existing
+immutable records. Each command typechecks/migrates, owns its HTTP sessions,
+stops them using **per-PID signals**, and stops only this owned DB on EXIT.
+No server is left running. Ports 9000/19000 must be free. Do not run concurrently.
+A standalone **cold** `test:p6a` also passed after creating the separate database
+`interfacer_medusa_p6a_cold` in that same owned container, with
+`DATABASE_URL=postgres://medusa:medusa_local@127.0.0.1:55436/interfacer_medusa_p6a_cold`.
+Cold output: `.tmp/p6a-cold.log`; last `.tmp/p6a-transcript.md` is that cold run.
+Logs: `.tmp/p6a-regression-{test,test-http,test-p1,test-p2,test-p3,test-p4,test-p5,test-p6a}.log`;
+HTTP transcript: `.tmp/p6a-transcript.md` (real curl including signature headers).
 
-Live Zenflows/DPP integration is **BLOCKED/deferred**: sibling worktrees/commits were not inspected under the task constraints; no compatible commerce policy or signed-envelope transport is assumed. Next production step is authoritative remote resource reads plus registered-key verification, action/audience/body binding, nonce replay protection and online fail-closed controller decisions. Never expose the local CLI/HTTP seam outside loopback testing or treat it as production authorization.
+`test:p6a` checks a correctly signed creation and all four refusals
+(**unsigned, forged signature, wrong private key, registered non-controller**)
+on **each of seven protected operations**, not just listing creation. Read-only
+SQL compares row counts **and hashes of all fields** in 17 relevant tables after
+every denial. It also checks op/params/time/nonce/shape/unknown-Person refusals,
+then really runs stock checkout/race/delivery and build acceptance/payment/
+capture/production/concurrency/restart, with no event on payment alone.
+Four crypto/contract tests include RFC 8032 Ed25519 vector 1 and resolver outage.
+P5 also checks a native workflow call with canonical metadata but no signature.
+
+Selected **actual** successful output (full blocks in the log/transcript):
+
+```text
+ℹ tests 4
+ℹ pass 4
+ℹ fail 0
+PASS P6a commerce.listing.create: unsigned refused; rows AND stored fields unchanged
+PASS P6a commerce.listing.create: forged refused; rows AND stored fields unchanged
+PASS P6a commerce.listing.create: wrong-key refused; rows AND stored fields unchanged
+PASS P6a commerce.listing.create: non-controller refused; rows AND stored fields unchanged
+PASS P6a signed-ok: real Ed25519 listing created
+ALL P6a CHECKS PASSED: signed-ok + four no-state-change refusals on all 7 operations; prior stock/build flows pass signed; per-PID cleanup
+PASS P6a finished; HTTP servers and owned DB stopped (data retained).
+```
+
+### Envelope / request format
+
+```json
+{
+  "envelope": {
+    "op": "commerce.listing.publish",
+    "params": {"listing_id": "iflb_...", "priceEUR": 19.95},
+    "person_id": "01JTESTPERSON00000000000001",
+    "nonce": "32-lowercase-hex-characters",
+    "issued_at": "2026-10-22T01:36:00.000Z"
+  },
+  "signature": "base64-of-64-real-Ed25519-signature-bytes"
+}
+```
+
+The example values above describe the format, not a reusable valid signature.
+Sign UTF-8 bytes of the **whole envelope**, recursively object-key-sorted JSON
+with JSON.stringify number/string encoding, preserved array order, no spaces or
+newline. Envelope and wrapper have exact keys; nonce is 128 random bits in hex;
+timestamp must be UTC with milliseconds and within ±5 minutes. Signature is
+canonical standard base64. Transport the wrapper's JSON as **unpadded base64url**
+in `X-Interfacer-Auth`. Dev CORS permits that header; body fields are unchanged.
+An `actingPersonId` body claim alone never authorizes anything.
+
+| Route | Signed op | Signed params / signer |
+| --- | --- | --- |
+| POST /dev/interfacer/listings | `commerce.listing.create` | `{resource,dpp}`; resource controller |
+| POST /dev/interfacer/listings/:id/publish | `commerce.listing.publish` | `{listing_id,priceEUR}`; persisted seller |
+| POST /dev/interfacer/listings/:id/checkout | `commerce.listing.checkout.setup` | `{listing_id}`; persisted seller |
+| POST /store/carts/:id/complete | `commerce.order.authorize` | `{cart_id,currency_code,purchase,items}`; bound buyer, plus customer session/Bearer |
+| POST /dev/interfacer/orders/:id/deliver | `commerce.order.deliver` | `{order_id}`; order's persisted seller |
+| POST /dev/interfacer/build-orders | `commerce.order.build.purchase` | `{cart_id,quote_id}`; bound buyer, plus customer session/Bearer |
+| POST /dev/interfacer/build-orders/:id/produce | `commerce.order.produce` | `{order_id}`; immutable quote's provider |
+
+For checkout, `purchase` is exactly P2/P5's canonical purchase evidence;
+`items` is every actual `{variant_id,quantity,unit_price}`, sorted by variant ID.
+`checkoutOperationParams` defines this contract; `scripts/signed-requests.py`
+demonstrates resolving it from local persisted records. Middleware verifies
+before writes; the native workflow hook re-verifies the stored signed wrapper.
+Signature denial is 403 on creation, otherwise native Medusa NOT_ALLOWED/400.
+Missing customer authentication still returns 401. Read/setup/matching routes
+retain their explicit local-only guards; they cannot replace a protected signature.
+
+### Tiny signing CLI / human example
+
+`npm run sign -- OP PERSON PARAMS_JSON [KEY_PERSON]` emits JSON
+`{envelope,signature}`. KEY_PERSON is only for wrong-key client tests. It needs
+no DB or server. It uses **disposable publicly checked-in demo keys**, never
+production secrets. Root scripts select `.tmp/auth-public-keyring.json` through
+`INTERFACER_KEYRING_PATH`; the signer maintains a separate private-key file.
+`npm run sign -- --seed-person PERSON` explicitly enrolls a new local test key;
+harnesses use this for unique per-run buyers. No HTTP key-enrollment API exists.
+
+Example in two terminals, from this directory (do not run alongside a harness):
+
+```bash
+# Terminal 1; retain the DB/container environment above if using the P6a DB.
+npm start
+```
+
+```bash
+# Terminal 2, same environment; these produce a REAL fresh signature.
+node -e 'const f=require("node:fs");process.stdout.write(JSON.stringify({
+  resource:JSON.parse(f.readFileSync("docs/fixtures/economic-resource.json")),
+  dpp:JSON.parse(f.readFileSync("docs/fixtures/dpp.json"))
+}))' > .tmp/p6a-request.json
+npm run --silent sign -- commerce.listing.create 01JTESTPERSON00000000000001 \
+  "$( < .tmp/p6a-request.json)" > .tmp/p6a-auth.json
+AUTH=$(node -p 'Buffer.from(require("node:fs").readFileSync(".tmp/p6a-auth.json")).toString("base64url")')
+curl --fail-with-body http://127.0.0.1:9000/dev/interfacer/listings \
+  -H 'Content-Type: application/json' -H "X-Interfacer-Auth: $AUTH" \
+  --data-binary @.tmp/p6a-request.json
+# 201 first creation, 200 identical retry. Omitting the header returns 403.
+```
+
+Stop terminal 1 with Ctrl-C, then `npm run stop` in the same DB environment.
+The human command is a signing recipe; acceptance evidence is the executed
+harness transcript, not a claimed separate manual/browser run.
+
+**Limits:** the signature check is real; the registry, IdentityLink enrollment,
+resource/controller source and REA sink remain local stand-ins. Demo keys are
+public. No live `verify_graphql`/Zenroom wire compatibility, remote PDP, audience
+isolation, revocation, browser UI or production deployment is claimed.
+**Nonce reuse is not persisted/refused**: identical envelopes may be retried
+within five minutes; existing business idempotency still applies. This is not a
+single-use replay guarantee. The fuller P6 hardening/UI tranche remains separate.
+[Full format, enforcement paths, real-vs-local boundaries and findings](docs/phase6a-findings.md).
 
 ## Inputs and authority
 
@@ -1667,7 +1807,7 @@ Live Zenflows/DPP integration is **BLOCKED/deferred**: sibling worktrees/commits
 
 Recovery after the **completed** product workflow/lost response was tested. If a hard process kill interrupts the workflow before it has created the variant, retry detects the incomplete product and raises `reconciliation_required`; it does not create a second product to hide it. This is not a complete saga/reconciliation UI. Do not manually rename/delete an in-flight projection's deterministic product handle; discovery of that orphan relies on it. Do not enable normal admin editing or production publishing for these demo products.
 
-P1 adds local pricing/publication and Store browsing; P2 adds identity-bound one-unit checkout with manual authorization. P3 adds native local pickup fulfillment/delivery and the local REA stand-in; its test also exercises native payment capture without a receipt. No signed HTTP operation, durable message worker, live refresh, remote ledger write or DPP/Zenflows mutation is implemented. See `docs/phase2-findings.md` and `docs/phase3-findings.md`. Admin build was intentionally not attempted. Older pinned dependencies emit deprecation warnings; this is a local spike, not a security-reviewed deployment.
+P1 adds local pricing/publication and Store browsing; P2 adds identity-bound one-unit checkout with manual authorization. P3 adds native local pickup fulfillment/delivery and the local REA stand-in; its test also exercises native payment capture without a receipt. P6a adds real signed HTTP operations. No durable message worker, live refresh, remote ledger write or DPP/Zenflows mutation is implemented. See `docs/phase2-findings.md` and `docs/phase3-findings.md`. Admin build was intentionally not attempted. Older pinned dependencies emit deprecation warnings; this is a local spike, not a security-reviewed deployment.
 
 ## DB and troubleshooting
 

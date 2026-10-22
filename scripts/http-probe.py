@@ -23,6 +23,7 @@ signal.signal(signal.SIGTERM, interrupted)
 
 
 def curl(*args, expected=200):
+    args = (*args, *import_module("signed-requests").curl_auth("/dev/interfacer/listings", args))
     command = ["curl", "--silent", "--show-error", "--max-time", "30",
                "--write-out", "\nHTTP %{http_code}\n", *args, url]
     output = subprocess.check_output(command, cwd=root, text=True)

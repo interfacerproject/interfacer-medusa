@@ -23,7 +23,9 @@ def note(message):
     print(message, flush=True)
 
 
-def curl(path, *args, expected=200):
+def curl(path, *args, expected=200, auto_sign=True):
+    if auto_sign:
+        args = (*args, *import_module("signed-requests").curl_auth(path, args))
     command = ["curl", "--silent", "--show-error", "--max-time", "45",
                "--write-out", "\nHTTP %{http_code}\n", *args, base + path]
     output = subprocess.check_output(command, cwd=root, text=True)
@@ -64,7 +66,7 @@ def register(name):
     return customer, auth
 
 
-def checks():
+def checks(before_complete=None):
     global key
     context = post("/dev/interfacer/commerce")
     key = ["-H", "x-publishable-api-key: " + context["publishable_key"]]
@@ -137,6 +139,8 @@ def checks():
     # Both carts see available stock before completion; concurrent completion must
     # reserve just one unit. This catches stale-cart/double-sale, not just add denial.
     carts = [cart_for(buyer, buyer_auth), cart_for(buyer, buyer_auth)]
+    if before_complete:
+        before_complete(carts[0], buyer_auth)
     post(f"/store/carts/{carts[0]}/complete", expected=401)
     wrong_auth = post(f"/store/carts/{carts[0]}/complete", auth=other_auth, expected=400)
     assert wrong_auth["message"] == "interfacer_cart_customer_mismatch"

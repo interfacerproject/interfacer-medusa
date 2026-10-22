@@ -52,6 +52,12 @@ export default async function verify({ container, args }: ExecArgs) {
   assert.ok(evidence)
   await carts.updateCarts(cart.id, { metadata: { interfacer_purchase: evidence.purchase } })
   await carts.updateLineItems(evidence.lines.map(({ item, metadata }) => ({ id: item.id, metadata })))
+  // Even correctly stamped editable metadata is not authority: the native hook
+  // independently requires a real buyer signature, without HTTP middleware.
+  const unsigned = await completeCartWorkflow(container).run({ input: { id: cart.id }, throwOnError: false })
+  assert.match(unsigned.errors[0]?.error.message, /authorization_denied/)
+  assert.equal((await carts.retrieveCart(cart.id)).completed_at, null)
+  console.log("PASS direct native checkout with canonical metadata but NO signature refused")
   // A trusted/internal custom-price caller must not bypass the fixed quote.
   const line = cart.items?.[0]
   assert.ok(line)

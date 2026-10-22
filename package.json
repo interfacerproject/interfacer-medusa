@@ -8,6 +8,8 @@
     "test:p2": "bash scripts/spike.sh test:p2",
     "test:p3": "bash scripts/spike.sh test:p3",
     "test:p5": "bash scripts/spike.sh test:p5",
+    "sign": "node scripts/sign.cjs",
+    "test:p6a": "bash scripts/spike.sh test:p6a",
     "test:p4": "bash scripts/spike.sh test:p4",
     "seed:matching": "bash scripts/spike.sh seed:matching",
     "seed:commerce": "bash scripts/spike.sh seed:commerce",
