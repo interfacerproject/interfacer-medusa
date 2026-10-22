@@ -6,6 +6,7 @@ import type InterfacerService from "./service"
 import { requireLocalCommerce } from "./commerce-context"
 import { buildReferences, buildRefuse, readBuildQuote } from "./build-purchase"
 import { termsHash } from "./matching"
+import { writeZenflowsEvent } from "./zenflows-event"
 
 // Explicit admin/supplier "produced" assertion, not a payment subscriber and not
 // a fabricated native fulfillment/delivery. The immutable receipt IS the local
@@ -50,14 +51,25 @@ export async function produceBuild(container: MedusaContainer, orderId: string, 
         Number(payments[0].amount) !== quote.total_price_cents / 100) buildRefuse("build_upfront_payment_required")
     const [previous] = await integration.listReaReceipts({ order_id: orderId })
     if (previous) return { created: false, receipt: previous }
-    // LOCAL STAND-IN SINK reused from P3. No successor DPP is minted.
+    const has_point_in_time = new Date()
+    // Bridge C: live Zenflows produce event (idempotent per order via the guard
+    // above); degrades gracefully to a local-only receipt on failure.
+    let zenflows_event_id: string | null = null
+    try {
+      zenflows_event_id = await writeZenflowsEvent({
+        action: "produce", quantity: quote.quantity, has_point_in_time,
+        note: `interfacer-marketplace produce order=${orderId} service=${quote.service_id}`,
+      })
+    } catch (e) {
+      console.warn("[interfacer] zenflows produce event failed; keeping local receipt only:", (e as Error).message)
+    }
     const receipt = await integration.createReaReceipts({
       action: "produce", provider_id: quote.provider_person_id, receiver_id: identity.person_id,
       resource_id: quote.design_id, design_id: quote.design_id, service_id: quote.service_id,
       dpp_id: quote.origin_dpp_id!, origin_dpp_id: quote.origin_dpp_id,
       quote_id: quote.id, quote_hash: quote.quote_hash,
-      order_id: orderId, quantity: quote.quantity, has_point_in_time: new Date(),
+      order_id: orderId, quantity: quote.quantity, has_point_in_time,
     })
-    return { created: true, receipt }
+    return { created: true, receipt: { ...receipt, zenflows_event_id } }
   })
 }

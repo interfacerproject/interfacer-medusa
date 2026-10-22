@@ -5,6 +5,7 @@ import { createOrderFulfillmentWorkflow, markOrderFulfillmentAsDeliveredWorkflow
 import { requireLocalCommerce, seedCommerce } from "./commerce-context"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
+import { writeZenflowsEvent } from "./zenflows-event"
 
 function refuse(reason: string): never {
   throw new MedusaError(MedusaError.Types.NOT_ALLOWED, reason)
@@ -113,13 +114,26 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
     }
     const [previous] = await integration.listReaReceipts({ order_id: orderId })
     if (previous) return { created: false, receipt: previous }
-    // LOCAL STAND-IN SINK for live Zenflows economic-event creation; swap this
-    // write for an idempotent remote adapter/outbox, not a second checkout hook.
+    const has_point_in_time = new Date(delivered.delivered_at!)
+    // Bridge C: write the LIVE Zenflows economic event first (idempotent per
+    // order via the guard above). A configured-but-failed write degrades
+    // gracefully: the local receipt is still the record, with a null event id.
+    let zenflows_event_id: string | null = null
+    try {
+      zenflows_event_id = await writeZenflowsEvent({
+        action: "transfer", quantity: Number(line.quantity), has_point_in_time,
+        note: `interfacer-marketplace transfer order=${orderId}`,
+      })
+    } catch (e) {
+      console.warn("[interfacer] zenflows transfer event failed; keeping local receipt only:", (e as Error).message)
+    }
     const receipt = await integration.createReaReceipts({
       action: "transfer", provider_id: binding.seller_agent_id, receiver_id: identity.person_id,
       resource_id: binding.catalog_resource_id, dpp_id: binding.source_dpp_id,
-      order_id: orderId, quantity: Number(line.quantity), has_point_in_time: new Date(delivered.delivered_at!),
+      order_id: orderId, quantity: Number(line.quantity), has_point_in_time,
     })
-    return { created: true, receipt }
+    // The live Zenflows event id travels on the response (not persisted on the
+    // local receipt yet — that needs a model migration, a clean follow-up).
+    return { created: true, receipt: { ...receipt, zenflows_event_id } }
   })
 }
