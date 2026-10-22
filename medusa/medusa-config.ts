@@ -19,6 +19,10 @@ module.exports = defineConfig({
   modules: [
     { resolve: "./src/modules/interfacer" },
     {
+      resolve: "@medusajs/medusa/fulfillment",
+      options: { providers: [{ resolve: "@medusajs/medusa/fulfillment-manual", id: "manual" }] },
+    },
+    {
       resolve: "@medusajs/medusa/locking",
       options: { providers: [{
         resolve: "@medusajs/medusa/locking-postgres", id: "postgres", is_default: true,

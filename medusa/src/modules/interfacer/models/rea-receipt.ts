@@ -1,0 +1,15 @@
+import { model } from "@medusajs/framework/utils"
+
+// LOCAL STAND-IN for a live Zenflows economic-event write; NOT a remote ledger.
+// Swappable sink: delivery.ts resolves the facts, then calls this module's store.
+export const ReaReceipt = model.define("interfacer_rea_receipt", {
+  id: model.id({ prefix: "ifrea" }).primaryKey(),
+  action: model.enum(["transfer"]),
+  provider_id: model.text(),
+  receiver_id: model.text(),
+  resource_id: model.text(),
+  dpp_id: model.text(),
+  order_id: model.text().unique(),
+  quantity: model.number(),
+  has_point_in_time: model.dateTime(),
+})

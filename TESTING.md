@@ -1209,6 +1209,159 @@ P2 also passed repeatedly against the default DB. Final run log:
 included in `npm test` without storage access. No production-build or driven
 browser test is claimed; the verified APIs are available for the P6 GUI.
 
+## P3 — Order → ValueFlows event
+
+**Verified locally, Medusa 2.10.3. The `rea-receipts` store is a LOCAL STAND-IN
+for a live Zenflows economic-event write, not a live ledger.**
+
+```bash
+npm run test:p3
+```
+
+Requires Docker, Node/npm as above and port 9000 free; do not run alongside
+another server or DB test. It reuses the full P2 HTTP checkout (real account,
+session, IdentityLink, server-priced resource purchase and stock race). Then:
+
+1. Asserts **zero receipts on payment authorization** and no fulfillment.
+2. Stops HTTP, runs native `capturePaymentWorkflow` via `medusa exec`, verifies
+   actual `captured_at`, and again asserts **zero receipts**.
+3. Boots HTTP and calls the delivery route four times concurrently. It performs
+   native packing + delivery; exactly one response is 201, the other three 200.
+4. Checks the single `transfer` receipt's provider (ListingBinding seller),
+   receiver (customer's IdentityLink Person), resource/DPP/order, quantity 1 and
+   time (native `delivered_at`). Native order delivered quantity is 1; stock
+   and reservation go 1/1 → 0/0, with no remaining active reservation.
+5. Re-delivers, restarts the server, retries again: unchanged receipt ID/time,
+   still one row. Checks CORS/preflight, disabled-mode refusals and DB uniqueness/
+   immutable update/delete/soft-delete. Production guards are in `npm test`.
+
+All four sequential HTTP sessions stop via **per-PID signals**, including on
+failure. CLI assertions run only with HTTP stopped. Shell EXIT cleanup stops the
+labeled spike DB, retaining data. Each run allocates a fresh synthetic resource
+and customer, retaining one new delivered order rather than recycling sold stock.
+Artifacts: `.tmp/p3-transcript.md`, `.tmp/p3-server*.log`, `.tmp/p3-state.json`
+(disposable local credentials/tokens also occur in reused P2 curl output).
+
+### Local entry points and limits
+
+- `POST /dev/interfacer/orders/:id/deliver {}`: **order ID**, not cart ID.
+  First receipt returns 201 `{created:true,receipt}`; retry returns 200
+  `{created:false,receipt}`. The route creates the real native fulfillment if
+  absent, marks it delivered if needed, then writes the receipt. An already-
+  delivered supported order can be reconciled by calling it again.
+- `GET /dev/interfacer/receipts`: `{receipts:[...],count}` from the module store.
+  OPTIONS is available on both endpoints.
+- Same fixture opt-in, production denial, no-store and exact localhost
+  **3104 / 3000** CORS allowlist as existing dev routes. No new public auth:
+  **anyone reaching this seam can assert delivery**. Bind only to loopback;
+  never expose it. Signed supplier authorization remains P6.
+- Trigger is the **guarded dev-route alternative, not a subscriber**. Native
+  fulfillment emits `order.fulfillment_created`; native delivery emits
+  `delivery.created` with `{id:fulfillmentId}`. Receipt creation is after the
+  delivery workflow and verified persisted evidence, never on placement/capture.
+  Unrelated Admin/internal deliveries need this reconciliation call; there is no
+  durable event consumer. See [P3 API findings](docs/phase3-findings.md).
+- Supports exactly **one resource line / one unit / local pickup**, matching P2's
+  fixture. Rejects mixed/multi-resource or carrier-shipping orders, canceled
+  orders and missing binding/identity. Provider/receiver/resource/DPP come from
+  immutable module records resolved from the order, never request metadata.
+- The configured native manual fulfillment provider and internal pickup option
+  permit real packing/delivery without a carrier shipment. No shipping method/
+  charge is retroactively added to the paid order. No carrier proof, live Person
+  resolution, remote Zenflows/DPP mutation, successor passport or browser-driven
+  verification is claimed.
+- Per-order Postgres advisory lock + unique order index prevent duplicates;
+  receipt mutation/deletion is blocked. A receipt-write failure after committed
+  delivery can be retried from native `delivered_at`. This is not an atomic
+  cross-workflow transaction or a kill-at-every-instruction recovery proof.
+
+### Actual verified output and curl evidence
+
+Executed on the existing default DB and a **fresh** database in the labeled
+spike container, with Node 24.19.0 / npm 11.17.0 (all commands exited 0):
+
+```bash
+npm run setup
+docker exec interfacer-medusa-spike-db createdb -U medusa interfacer_medusa_p3_acceptance
+DATABASE_URL=postgres://medusa:medusa_local@127.0.0.1:55432/interfacer_medusa_p3_acceptance npm run test:p3
+```
+
+Selected output from `.tmp/p3-cold-verified.log` (verbatim):
+
+```text
+PASS NO RECEIPT ON PAYMENT: order=order_01M5GG4JSYVDWKDAQC2QPHXRCK, manual payment authorized; zero receipts and zero fulfillments.
+PASS NO RECEIPT ON CAPTURE: payment=pay_01M5GG4JW4QSRJ66Z8CEBXAWEX captured_at=2026-10-22T00:28:26.849Z; order still has zero receipts.
+PASS DELIVERY: native packed/delivered fulfillment, delivered_quantity=1, stock consumed/reservation released; correct transfer/provider/receiver/resource/DPP/order/quantity/time.
+PASS IDEMPOTENT: four concurrent deliver calls => one 201 + three 200; repeat delivery => same receipt and exactly one row.
+PASS RESTART: receipt persisted; re-delivery after server restart still returns the same receipt.
+PASS disabled fixture mode: delivery/receipt view/preflights refused.
+PASS receipt DB uniqueness + immutable update/soft-delete/delete guards; exactly one receipt remains.
+ALL P3 CHECKS PASSED; all server sessions stopped via per-PID signals.
+PASS P3 finished; HTTP server and spike DB stopped (data retained).
+```
+
+Selected real curl blocks from `.tmp/p3-cold-transcript.md` (verbatim).
+The harness asserts the returned receipt fields against the actual listing and
+identity. Payment capture ran through the native CLI workflow between the two
+empty receipt reads; it has no invented curl endpoint.
+
+**No receipt before delivery:**
+
+```bash
+curl --silent --show-error --max-time 45 --write-out '
+HTTP %{http_code}
+' http://127.0.0.1:9000/dev/interfacer/receipts
+```
+
+```text
+{"receipts":[],"count":0}
+HTTP 200
+```
+
+**One delivery receipt (one of four concurrent calls):**
+
+```bash
+curl --silent --show-error --max-time 45 --write-out '
+HTTP %{http_code}
+' -X POST -H 'Content-Type: application/json' --data '{}' http://127.0.0.1:9000/dev/interfacer/orders/order_01M5GG4JSYVDWKDAQC2QPHXRCK/deliver
+```
+
+```text
+{"created":true,"receipt":{"id":"ifrea_01M5GG4YE2877RM8MP92691F4X","action":"transfer","provider_id":"01JTESTPERSON00000000000001","receiver_id":"p2-person-1792628893352820000","resource_id":"01JTESTRESOURCE000000000001-p2-1792628893352820000","dpp_id":"dpp-sample-0001-p2-1792628893352820000","order_id":"order_01M5GG4JSYVDWKDAQC2QPHXRCK","quantity":1,"has_point_in_time":"2026-10-22T00:28:34.593Z","created_at":"2026-10-22T00:28:34.626Z","updated_at":"2026-10-22T00:28:34.626Z","deleted_at":null}}
+HTTP 201
+```
+
+**Stored view:**
+
+```bash
+curl --silent --show-error --max-time 45 --write-out '
+HTTP %{http_code}
+' http://127.0.0.1:9000/dev/interfacer/receipts
+```
+
+```text
+{"receipts":[{"id":"ifrea_01M5GG4YE2877RM8MP92691F4X","action":"transfer","provider_id":"01JTESTPERSON00000000000001","receiver_id":"p2-person-1792628893352820000","resource_id":"01JTESTRESOURCE000000000001-p2-1792628893352820000","dpp_id":"dpp-sample-0001-p2-1792628893352820000","order_id":"order_01M5GG4JSYVDWKDAQC2QPHXRCK","quantity":1,"has_point_in_time":"2026-10-22T00:28:34.593Z","created_at":"2026-10-22T00:28:34.626Z","updated_at":"2026-10-22T00:28:34.626Z","deleted_at":null}],"count":1}
+HTTP 200
+```
+
+**Re-trigger returns the same receipt:**
+
+```bash
+curl --silent --show-error --max-time 45 --write-out '
+HTTP %{http_code}
+' -X POST -H 'Content-Type: application/json' --data '{}' http://127.0.0.1:9000/dev/interfacer/orders/order_01M5GG4JSYVDWKDAQC2QPHXRCK/deliver
+```
+
+```text
+{"created":false,"receipt":{"id":"ifrea_01M5GG4YE2877RM8MP92691F4X","action":"transfer","provider_id":"01JTESTPERSON00000000000001","receiver_id":"p2-person-1792628893352820000","resource_id":"01JTESTRESOURCE000000000001-p2-1792628893352820000","dpp_id":"dpp-sample-0001-p2-1792628893352820000","order_id":"order_01M5GG4JSYVDWKDAQC2QPHXRCK","quantity":1,"has_point_in_time":"2026-10-22T00:28:34.593Z","created_at":"2026-10-22T00:28:34.626Z","updated_at":"2026-10-22T00:28:34.626Z","deleted_at":null}}
+HTTP 200
+```
+
+All regression commands also passed after P3: `npm test` (invoked as
+`npm run test`), `npm run test:http`, `npm run test:p1`, `npm run test:p2`.
+Raw logs: `.tmp/p3-regression-{test,test-http,test-p1,test-p2}.log`.
+Final checks: ports 9000/19000 not listening; spike DB status `exited`.
+
 ## Authorization: explicit local stub, not cryptographic proof
 
 `medusa/src/modules/interfacer/fixture-controller-check.ts` is the deliberately named **fixture controller seam**. Root `start`/`project`/`test`/`test:http` scripts explicitly enable `INTERFACER_AUTH_MODE=fixture-controller-stub`. It compares a locally asserted Person with the resource fixture's `primaryAccountable.id`. Only that controller is allowed; seller eligibility is NOT an additional gate.
@@ -1241,7 +1394,7 @@ Live Zenflows/DPP integration is **BLOCKED/deferred**: sibling worktrees/commits
 
 Recovery after the **completed** product workflow/lost response was tested. If a hard process kill interrupts the workflow before it has created the variant, retry detects the incomplete product and raises `reconciliation_required`; it does not create a second product to hide it. This is not a complete saga/reconciliation UI. Do not manually rename/delete an in-flight projection's deterministic product handle; discovery of that orphan relies on it. Do not enable normal admin editing or production publishing for these demo products.
 
-P1 adds local seed pricing/publication and real Store API browsing. P2 adds local IdentityLink binding, one-unit stock allocation/reservation and a real native checkout/order with manual payment authorization, as documented above. No signed HTTP operation, durable message worker, live refresh, capture, fulfillment/delivery, ledger write or DPP/Zenflows mutation is implemented. P2 auth/cart/payment APIs are now end-to-end tested; see `docs/phase2-findings.md`. Admin build was intentionally not attempted. Older pinned dependencies emit deprecation warnings; this is a local spike, not a security-reviewed deployment.
+P1 adds local pricing/publication and Store browsing; P2 adds identity-bound one-unit checkout with manual authorization. P3 adds native local pickup fulfillment/delivery and the local REA stand-in; its test also exercises native payment capture without a receipt. No signed HTTP operation, durable message worker, live refresh, remote ledger write or DPP/Zenflows mutation is implemented. See `docs/phase2-findings.md` and `docs/phase3-findings.md`. Admin build was intentionally not attempted. Older pinned dependencies emit deprecation warnings; this is a local spike, not a security-reviewed deployment.
 
 ## DB and troubleshooting
 

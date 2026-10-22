@@ -2,8 +2,9 @@ import { MedusaService } from "@medusajs/framework/utils"
 import { Client } from "pg"
 import { ListingBinding, ProjectionIntent } from "./models/listing-binding"
 import { IdentityLink } from "./models/identity-link"
+import { ReaReceipt } from "./models/rea-receipt"
 
-export default class InterfacerService extends MedusaService({ ListingBinding, ProjectionIntent, IdentityLink }) {
+export default class InterfacerService extends MedusaService({ ListingBinding, ProjectionIntent, IdentityLink, ReaReceipt }) {
   // Session-scoped lock spans independent Medusa workflow transactions.
   // Only advisory locking here: never SQL-write a Medusa commerce table.
   async withProjectionLock<T>(key: string, work: () => Promise<T>): Promise<T> {

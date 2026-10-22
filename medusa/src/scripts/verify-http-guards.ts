@@ -5,6 +5,8 @@ import { POST as seed, OPTIONS as seedOptions } from "../api/dev/interfacer/comm
 import { POST as publish, OPTIONS as publishOptions } from "../api/dev/interfacer/listings/[id]/publish/route"
 import { POST as identity, OPTIONS as identityOptions } from "../api/dev/interfacer/identity/route"
 import { POST as checkout, OPTIONS as checkoutOptions } from "../api/dev/interfacer/listings/[id]/checkout/route"
+import { POST as deliver, OPTIONS as deliverOptions } from "../api/dev/interfacer/orders/[id]/deliver/route"
+import { GET as receipts, OPTIONS as receiptOptions } from "../api/dev/interfacer/receipts/route"
 import { validatePriceEUR } from "../modules/interfacer/publish-listing"
 
 export async function verifyHttpGuards() {
@@ -27,7 +29,7 @@ export async function verifyHttpGuards() {
     return { status, result, headers }
   }
   const guarded = [GET, POST, OPTIONS, seed, seedOptions, publish, publishOptions,
-    identity, identityOptions, checkout, checkoutOptions]
+    identity, identityOptions, checkout, checkoutOptions, deliver, deliverOptions, receipts, receiptOptions]
   try {
     for (const value of [undefined, null, "19.95", NaN, Infinity, 0, -1, 1.001, 1000001]) {
       assert.throws(() => validatePriceEUR(value), /invalid_price/)
@@ -52,7 +54,7 @@ export async function verifyHttpGuards() {
       assert.equal((await invoke(handler, "https://example.org")).status, 403)
     }
     for (const origin of ["http://localhost:3104", "http://localhost:3000"]) {
-      for (const handler of [OPTIONS, seedOptions, publishOptions, identityOptions, checkoutOptions]) {
+      for (const handler of [OPTIONS, seedOptions, publishOptions, identityOptions, checkoutOptions, deliverOptions, receiptOptions]) {
         const response = await invoke(handler, origin)
         assert.equal(response.status, 204)
         assert.equal(response.headers["Access-Control-Allow-Origin"], origin)
@@ -64,7 +66,7 @@ export async function verifyHttpGuards() {
     for (const body of [null, [], {}, { priceEUR: "19.95" }, { priceEUR: 0 }, { priceEUR: 19.95, product_id: "untrusted" }]) {
       assert.equal((await invoke(publish, undefined, body)).status, 400)
     }
-    console.log("PASS HTTP handlers (including P1/P2 commerce/publish/identity/stock) + EUR price validation: fixture opt-in + production guards (GET/POST/OPTIONS), CORS, body validation; no storage access")
+    console.log("PASS HTTP handlers (including P1/P2/P3 commerce/publish/identity/stock/delivery/receipts) + EUR price validation: fixture opt-in + production guards (GET/POST/OPTIONS), CORS, body validation; no storage access")
   } finally {
     for (const [key, value] of [
       ["INTERFACER_AUTH_MODE", original.mode], ["NODE_ENV", original.env],

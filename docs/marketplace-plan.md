@@ -88,3 +88,4 @@ and advances. State lives here + in git; resume from the last `DONE` line.
 - Phase 0: DONE (pinned Medusa 2.10.3, spike projection, dev endpoint, GUI tester) — verified in-browser round-trip.
 - Phase 1: DONE (storefront + publish) — verified: GET /store/products shows published product EUR 19.95 + resource/DPP refs; idempotent; fixture-disabled refused. (orchestrator ran npm run test:p1 -> ALL P1 CHECKS PASSED)
 - Phase 2: DONE (identity-bound checkout) — verified: bound customer buys at server price EUR 19.95 (client 0.01 rejected), DPP line metadata, manual payment authorized; unbound refused; no double-sell. (orchestrator ran npm run test:p2 -> ALL P2 CHECKS PASSED)
+- Phase 3: DONE (order -> ValueFlows event) — verified: delivery writes exactly one rea-receipt (transfer, provider/receiver/resource/DPP/order), idempotent across concurrency + restart, none on payment; immutable. (orchestrator ran npm run test:p3 -> ALL P3 CHECKS PASSED)

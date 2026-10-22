@@ -177,6 +177,9 @@ def checks():
     post(f"/store/carts/{unbound_cart}/line-items", {"variant_id": variant, "quantity": 1}, auth=other_auth, expected=400)
     note(f"PASS PURCHASE order={order['id']}: EUR 19.95 server price (client 0.01 rejected), canonical DPP/resource line metadata, manual payment authorized (not captured).")
     note("PASS NO DOUBLE SELL: two ready carts completed concurrently => one order, one inventory refusal; exactly one reservation, stocked=1 reserved=1; repeat complete returns same order; re-seed does not restock.")
+    # Reused by P3 in the same live server; no fabricated order/checkout shortcut.
+    return {"order": order, "binding": listing["binding"], "identity": identity["identity_link"],
+            "checkout": checkout, "buyer_auth": buyer_auth} 
 
 
 def disabled_checks():
@@ -186,15 +189,20 @@ def disabled_checks():
     note("PASS disabled fixture mode: identity/checkout seed/preflight refused.")
 
 
-try:
-    serve = import_module("server-lifecycle").serve
-    command = ["./node_modules/.bin/medusa", "develop", "--host", "127.0.0.1", "--port", "9000", "--no-types"]
-    serve(command, os.environ.copy(), "p2-server.log", checks, cwd=root / "medusa")
-    serve(command, {**os.environ, "INTERFACER_AUTH_MODE": "disabled"}, "p2-server-disabled.log", disabled_checks, cwd=root / "medusa")
-    # Server sessions are stopped before loading another Medusa process (memory).
-    env = {**os.environ, "INTERFACER_AUTH_MODE": "disabled"}
-    subprocess.run(["./node_modules/.bin/medusa", "exec", "./src/scripts/verify-p2.ts"],
-                   cwd=root / "medusa", env=env, check=True)
-    note("ALL P2 CHECKS PASSED; both server sessions stopped via per-PID signals.")
-finally:
-    (root / ".tmp/p2-transcript.md").write_text("\n".join(transcript))
+def main():
+    try:
+        serve = import_module("server-lifecycle").serve
+        command = ["./node_modules/.bin/medusa", "develop", "--host", "127.0.0.1", "--port", "9000", "--no-types"]
+        serve(command, os.environ.copy(), "p2-server.log", checks, cwd=root / "medusa")
+        serve(command, {**os.environ, "INTERFACER_AUTH_MODE": "disabled"}, "p2-server-disabled.log", disabled_checks, cwd=root / "medusa")
+        # Server sessions are stopped before loading another Medusa process (memory).
+        env = {**os.environ, "INTERFACER_AUTH_MODE": "disabled"}
+        subprocess.run(["./node_modules/.bin/medusa", "exec", "./src/scripts/verify-p2.ts"],
+                       cwd=root / "medusa", env=env, check=True)
+        note("ALL P2 CHECKS PASSED; both server sessions stopped via per-PID signals.")
+    finally:
+        (root / ".tmp/p2-transcript.md").write_text("\n".join(transcript))
+
+
+if __name__ == "__main__":
+    main()
