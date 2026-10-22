@@ -10,11 +10,19 @@ module.exports = defineConfig({
       // /dev uses the same exact GUI origins explicitly (not auto-CORS in v2).
       storeCors: ["http://localhost:8000", ...DEV_GUI_ORIGINS].join(","),
       adminCors: "http://localhost:9000",
-      authCors: "http://localhost:9000",
+      authCors: ["http://localhost:9000", ...DEV_GUI_ORIGINS].join(","),
       jwtSecret: process.env.JWT_SECRET || "local-only-do-not-deploy",
       cookieSecret: process.env.COOKIE_SECRET || "local-only-do-not-deploy",
     },
   },
   admin: { disable: true },
-  modules: [{ resolve: "./src/modules/interfacer" }],
+  modules: [
+    { resolve: "./src/modules/interfacer" },
+    {
+      resolve: "@medusajs/medusa/locking",
+      options: { providers: [{
+        resolve: "@medusajs/medusa/locking-postgres", id: "postgres", is_default: true,
+      }] },
+    },
+  ],
 })

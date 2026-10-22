@@ -25,6 +25,14 @@ Run `npm run test:p1` for the full curl acceptance and automatic cleanup.
 Manual: `npm run seed:commerce`, `npm run project`, then
 `PRICE_EUR=19.95 npm run publish`.
 
+P2 adds a local IdentityLink resolver, authenticated checkout, canonical DPP
+order references, native one-unit inventory reservation and manual payment
+authorization. Run `npm run test:p2` for the purchase + unbound-refusal +
+concurrent no-double-sell test; it stops its servers and DB automatically.
+Identity resolution remains development-only; no capture, delivery or REA event.
+
+- [P2 testing](TESTING.md#p2--identity-bound-checkout) — exact calls, real responses, limits.
+- [P2 findings](docs/phase2-findings.md) — verified auth/cart/payment/inventory APIs.
 - [TESTING.md](TESTING.md#p1--storefront--publish) — P1 commands, publishable keys, real responses and limits.
 - [P1 findings](docs/phase1-findings.md) — verified 2.10.3 commerce APIs.
 - [Phase 0 findings](docs/phase0-findings.md) — version gate and source evidence.

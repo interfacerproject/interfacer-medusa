@@ -69,6 +69,13 @@ case "${1:-test}" in
     fixture_env
     python3 scripts/http-probe.py
     ;;
+  test:p2)
+    trap db_stop EXIT
+    setup
+    fixture_env
+    python3 scripts/p2-probe.py
+    echo "PASS P2 finished; HTTP server and spike DB stopped (data retained)."
+    ;;
   test:p1)
     trap db_stop EXIT
     setup
@@ -101,5 +108,5 @@ case "${1:-test}" in
     npm --prefix medusa run inspect
     ;;
   stop) db_stop ;;
-  *) echo "Usage: bash scripts/spike.sh {test|test:http|test:p1|seed:commerce|publish|setup|start|project|inspect|stop}" >&2; exit 2 ;;
+  *) echo "Usage: bash scripts/spike.sh {test|test:http|test:p1|test:p2|seed:commerce|publish|setup|start|project|inspect|stop}" >&2; exit 2 ;;
 esac
