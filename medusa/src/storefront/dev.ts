@@ -21,12 +21,16 @@ export function demo(): Demo { return JSON.parse(readFileSync(DEMO_FILE, "utf8")
 export function allowStorefront(req: MedusaRequest, res: MedusaResponse): boolean {
   if (!allowLocalRequest(req, res)) return false
   const loopback = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket?.remoteAddress ?? "")
-  // Do not trust forwarded headers. Deny DNS rebinding and cross-site requests,
-  // even from the other GUI origins allowed on the older dev routes.
+  // Do not trust forwarded headers. Deny DNS rebinding and cross-origin requests.
+  // The loopback + host-allowlist + origin-match checks block real cross-origin
+  // abuse (a cross-origin fetch carries an Origin header -> origin-match refuses).
+  // We do NOT reject on sec-fetch-site: a legitimate top-level page navigation
+  // opened from another page/newtab/terminal link is "cross-site" yet carries no
+  // Origin, and must load — otherwise the user sees a cryptic JSON refusal.
   const origin = req.headers.origin
   if (process.env.INTERFACER_DEV_STOREFRONT !== "true" || !loopback ||
       !["localhost:9000", "127.0.0.1:9000"].includes(req.headers.host ?? "") ||
-      (origin && origin !== `http://${req.headers.host}`) || req.headers["sec-fetch-site"] === "cross-site") {
+      (origin && origin !== `http://${req.headers.host}`)) {
     res.status(403).json({ reason: "local_storefront_only" })
     return false
   }
