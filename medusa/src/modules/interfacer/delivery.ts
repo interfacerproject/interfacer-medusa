@@ -123,6 +123,9 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
       zenflows_event_id = await writeZenflowsEvent({
         action: "transfer", quantity: Number(line.quantity), has_point_in_time,
         note: `interfacer-marketplace transfer order=${orderId}`,
+        // Bridge B: a real per-listing Zenflows resource, tracked to the catalog resource.
+        resource_name: `Interfacer listing ${binding.catalog_resource_id}`,
+        resource_tracking_id: binding.catalog_resource_id,
       })
     } catch (e) {
       console.warn("[interfacer] zenflows transfer event failed; keeping local receipt only:", (e as Error).message)
