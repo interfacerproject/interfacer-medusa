@@ -8,7 +8,9 @@ Medusa v2 instance, and the Interfacer Commerce integration module.
 prove their registered key and sign commerce writes with their browser wallet;
 stock writes raise/transfer, builds write Process/produce/transfer. The GUI shows
 the confirmed handover id with LIVE. Catalog/suppliers/payments remain fixtures.
-See [current bridge protocol, setup and limits](docs/zenflows-bridge.md).
+See [current bridge protocol, setup and limits](docs/zenflows-bridge.md)
+and the [maintained bilingual reviewers’ field guide](docs/review/README.md).
+The local reviewer site includes it at http://127.0.0.1:3110/it/medusa.html.
 `npm run test:unit` runs the service-independent matching/crypto/bridge tests.
 
 - `docs/integration-spec.md` — the end-to-end integration specification

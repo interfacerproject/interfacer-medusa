@@ -1,0 +1,70 @@
+--- a/build.mjs
++++ b/build.mjs
+@@ -7 +7,2 @@
+-export const pages=[...story,...implementation];
++import {medusa} from '../interfacer-medusa/docs/review/field-guide.mjs';
++export const pages=[...story,...implementation,medusa];
+@@ -13,0 +15,5 @@
++ ['interfacer-medusa',1,'master',L('Registered buyer wallets + live Process/produce/transfer (23 Oct)','Wallet acquirente registrato + Process/produce/transfer live (23 ott)'),'draft'],
++ ['interfacer-gui',922,'#921',L('Marketplace GUI + buyer wallet + local proxy (23 Oct)','GUI marketplace + wallet acquirente + proxy locale (23 ott)'),'draft'],
++ ['interfacer-gui',921,'main',L('Commerce dev spike — marketplace GUI base','Spike commerce dev — base GUI marketplace'),'draft'],
++ ['zenflows',84,'#80',L('Local marketplace compatibility target; authz-pdp base','Target locale marketplace; base authz-pdp'),'draft'],
++ ['interfacer-client',7,'main',L('Locally built SDK compatibility target, not published','SDK compatibile buildato localmente, non pubblicato'),'draft'],
+@@ -71 +77 @@
+-<main id="content" tabindex="-1"><div class="topbar"><span>${t.snapshot}</span><a href="${link('review')}">${lang==='en'?'PR map':'Mappa PR'} ${arrow}</a></div><header class="chapter-header"><h1>${page.title[lang]}</h1><p class="intro">${page.intro[lang]}</p><div class="review-status"><span>${lang==='en'?'Local implementation. Open review stack.':'Implementazione locale. Stack in review.'}</span><a href="${link('review')}#rollout-gates">${lang==='en'?'See release gates':'Leggi i gate di rilascio'} ${arrow}</a></div>${page.prs.length?`<p class="chapter-prs">${lang==='en'?'Related work:':'Lavoro collegato:'} ${page.prs.map(([repo,n,kind])=>kind==='issue'?issue:pr(repo,n)).join(' · ')}</p>`:''}</header>
++<main id="content" tabindex="-1"><div class="topbar"><span>${page.snapshot?.[lang]||t.snapshot}</span><a href="${link('review')}">${lang==='en'?'PR map':'Mappa PR'} ${arrow}</a></div><header class="chapter-header"><h1>${page.title[lang]}</h1><p class="intro">${page.intro[lang]}</p><div class="review-status"><span>${lang==='en'?'Local implementation. Open review stack.':'Implementazione locale. Stack in review.'}</span><a href="${link('review')}#rollout-gates">${lang==='en'?'See release gates':'Leggi i gate di rilascio'} ${arrow}</a></div>${page.prs.length?`<p class="chapter-prs">${lang==='en'?'Related work:':'Lavoro collegato:'} ${page.prs.map(([repo,n,kind])=>kind==='issue'?issue:pr(repo,n)).join(' · ')}</p>`:''}</header>
+@@ -79 +85 @@
+- let full='# Interfacer authorization implementation guide / Guida all’implementazione\n\nSnapshot: 2026-10-12. No merge, deployment or SDK publication.\n\n';
++ let full='# Interfacer authorization implementation guide / Guida all’implementazione\n\nAuthorization evidence: historical chapter checkpoints. Medusa review snapshot: 2026-10-23. No merge, production deployment or SDK publication.\n\n';
+--- a/server.mjs
++++ b/server.mjs
+@@ -17 +17 @@
+- const allowed=/^\/(index\.html|styles\.css|app\.mjs|search-index\.json|guide-bilingual\.md|(en|it)\/(index|backend|requests|claim|control|metadata|accept|crossservice|validation|review|reference)\.html|assets\/(favicon\.svg|images\/[a-z-]+\.webp|fonts\/(plex-(regular|semibold|bold)\.woff2|OFL\.txt)))$/;
++ const allowed=/^\/(index\.html|styles\.css|app\.mjs|search-index\.json|guide-bilingual\.md|(en|it)\/(index|backend|requests|claim|control|metadata|accept|crossservice|medusa|validation|review|reference)\.html|assets\/(favicon\.svg|images\/[a-z-]+\.webp|fonts\/(plex-(regular|semibold|bold)\.woff2|OFL\.txt)))$/;
+--- a/README.md
++++ b/README.md
+@@ -19,0 +20 @@
++- Medusa marketplace (23 October / ottobre 2026): http://127.0.0.1:3110/it/medusa.html · /en/medusa.html
+@@ -33 +34 @@
+-Ten equivalent chapters in each language: overview; backend identity/policy;
++Twelve equivalent chapters in each language: overview; backend identity/policy;
+@@ -35 +36 @@
+-atomic contribution proposals; validation ledger; cross-repository PR stack/review; technical reference/reproduction.
++atomic contribution proposals; validation ledger; cross-repository PR stack/review; technical reference/reproduction; Medusa marketplace review snapshot.
+@@ -37 +38 @@
+-Dieci capitoli equivalenti per lingua: panoramica; identità/policy backend;
++Dodici capitoli equivalenti per lingua: panoramica; identità/policy backend;
+@@ -39 +40 @@
+-proposte di contributo atomiche; registro verifiche; stack PR/review cross-repository; riferimento tecnico/riproduzione.
++proposte di contributo atomiche; registro verifiche; stack PR/review cross-repository; riferimento tecnico/riproduzione; snapshot review marketplace Medusa.
+@@ -51,0 +53,13 @@
++
++## Medusa review snapshot (2026-10-23)
++
++The Medusa chapter is imported from the versioned canonical source
++`../interfacer-medusa/docs/review/field-guide.mjs`. That repository also contains
++a standalone bilingual HTML guide, the integration patch for this non-Git site,
++and tested implementation pins. It supersedes the old Claude-hosted Medusa artifact
++as the maintained local copy; the cloud artifact was not republished here.
++
++Il capitolo Medusa importa la sorgente canonica versionata in
++`../interfacer-medusa/docs/review/field-guide.mjs`, con guida HTML autonoma,
++patch di integrazione per questo sito non Git e pin delle implementazioni testate.
++È la copia locale mantenuta; il vecchio artifact cloud Claude non è stato ripubblicato.
+--- a/tests/site.test.mjs
++++ b/tests/site.test.mjs
+@@ -13,2 +13,2 @@
+-test('eleven complete, structurally equivalent English/Italian chapters',()=>{
+- assert.equal(pages.length,11);
++test('twelve complete, structurally equivalent English/Italian chapters',()=>{
++ assert.equal(pages.length,12);
+@@ -51,0 +52,9 @@
++test('Medusa review snapshot distinguishes verified buyers, real production and remaining catalog/outbox work',()=>{
++ const page=pages.find(p=>p.id==='medusa');
++ assert.ok(page);
++ for(const lang of ['en','it']){
++  const text=page.sections.map(s=>s.body[lang]).join(' ');
++  for(const term of ['outputOf','21','20','9/9','interfacer-gui-h0n','interfacer-gui-nhn'])assert.ok(text.includes(term),lang+': '+term);
++  assert.ok(page.sources.every(s=>/\/blob\/[0-9a-f]{40}\//.test(s.url)));
++ }
++});
