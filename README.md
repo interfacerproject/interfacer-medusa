@@ -4,6 +4,13 @@ First integration between the Interfacer project (ValueFlows/Zenflows + DPP)
 and MedusaJS (headless commerce). Home for the integration spec, the local
 Medusa v2 instance, and the Interfacer Commerce integration module.
 
+**2026-10-23 — optional live local Zenflows bridge:** logged-in Interfacer buyers
+prove their registered key and sign commerce writes with their browser wallet;
+stock writes raise/transfer, builds write Process/produce/transfer. The GUI shows
+the confirmed handover id with LIVE. Catalog/suppliers/payments remain fixtures.
+See [current bridge protocol, setup and limits](docs/zenflows-bridge.md).
+`npm run test:unit` runs the service-independent matching/crypto/bridge tests.
+
 - `docs/integration-spec.md` — the end-to-end integration specification
   (architecture, data model, design→services matching, phased plan).
   §16 records the first-spike decisions.
@@ -18,13 +25,14 @@ npm run test:all  # all nine harnesses, including real browser journeys
 ```
 
 **LOCAL DEV — fixture/dev keys, not production.** Both stock delivery and build
-production yield persisted ValueFlows receipts; the REA sink and key→Person
-resolver remain labeled local stand-ins. [Final status and click paths](docs/marketplace-STATUS.md).
+production yield persisted ValueFlows receipts. With no live configuration the
+REA sink and key→Person resolver remain labeled local stand-ins. [Final status and click paths](docs/marketplace-STATUS.md).
 [Run, evidence, cleanup and limits](TESTING.md#p6b--storefront--end-to-end).
 `npm test` alone still runs the original projection/immutability harness.
 
 P6a authorization uses **real Ed25519 signed envelopes** on commerce writes.
-Key → Person resolution remains a **LOCAL stand-in**, not a live Zenflows PDP.
+Fixture Key → Person resolution remains a **LOCAL stand-in**; verified GUI
+buyers use the live registry. Neither path is a live Zenflows authorization PDP.
 Run `npm run test:p6a` for signed successes and unsigned/forged/wrong-key/
 non-controller refusals across the stock and build flows.
 [Current signing instructions and verified output](TESTING.md#p6a--real-signed-envelope-auth). Only the DPP ID reference is exposed, never passport

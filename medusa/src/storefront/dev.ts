@@ -39,6 +39,20 @@ export function allowStorefront(req: MedusaRequest, res: MedusaResponse): boolea
   res.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")
   return true
 }
+// Per-request scene keeps the catalog/supplier fixture boundary but derives the
+// buyer from the authenticated native Medusa account and immutable identity link.
+export async function buyerScene(req: MedusaRequest): Promise<Demo> {
+  const scene = demo()
+  const customerId = (req as AuthenticatedMedusaRequest).auth_context?.actor_id
+  if (customerId === scene.customer_id) return scene
+  if (!customerId) refuse("demo_customer_required")
+  const integration = req.scope.resolve<InterfacerService>(INTERFACER_MODULE)
+  const [identity] = await integration.listIdentityLinks({ customer_id: customerId })
+  if (!identity?.zenflows_person_id || identity.zenflows_person_id !== identity.person_id)
+    refuse("verified_buyer_required")
+  return { ...scene, customer_id: customerId, buyer_person_id: identity.person_id, password: "" }
+}
+
 export function requireDemoCustomer(req: MedusaRequest, scene: Demo) {
   if ((req as AuthenticatedMedusaRequest).auth_context?.actor_id !== scene.customer_id) refuse("demo_customer_required")
 }

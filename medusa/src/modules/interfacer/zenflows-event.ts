@@ -1,36 +1,24 @@
-// Real Zenflows economic-event adapter (bridges B / C / D).
-//
-// When INTERFACER_ZENFLOWS_URL is set, a delivery/production milestone writes
-// LIVE ValueFlows events to Zenflows (in addition to the local rea-receipt):
-//  - stock delivery: RAISE a real per-listing EconomicResource (owned by the
-//    provider agent), then TRANSFER it to the buyer — so resourceInventoriedAs
-//    is a real, per-listing resource (bridge B) between real agents (bridge D).
-//  - build production: PRODUCE a real built resource for the buyer.
-// When the var is unset this is a no-op and the local rea-receipts sink remains
-// the only record, so the marketplace still runs stand-alone.
-//
-// Still a labeled demo mapping: the provider agent, the buyer person and the
-// unit are seeded Zenflows ids read from env (one seller org, one buyer person
-// in the demo). The RESOURCE is now created per listing/build; the WRITE and the
-// agents are real.
-
+// Live local Zenflows milestone adapter. Stock: raise -> transfer. Build:
+// Process -> produce (provider owns output) -> transfer to the order's buyer.
+// Seller/unit still use the explicit demo mapping; real buyers are per-order.
+// Unconfigured = local receipt only. This is NOT a durable outbox: an ambiguous
+// network/DB failure still needs reconciliation, not an automatic blind replay.
 export type ZenflowsConfig = {
   url: string
   provider: string
-  receiver: string
-  resource: string
+  receiver?: string // legacy fixture buyer only; real sessions supply per-order
   unit: string
   admin?: string
 }
 
 export function zenflowsConfig(): ZenflowsConfig | null {
   const url = process.env.INTERFACER_ZENFLOWS_URL
+  if (!url) return null
   const provider = process.env.INTERFACER_ZENFLOWS_PROVIDER
-  const receiver = process.env.INTERFACER_ZENFLOWS_RECEIVER
-  const resource = process.env.INTERFACER_ZENFLOWS_RESOURCE
   const unit = process.env.INTERFACER_ZENFLOWS_UNIT
-  if (!url || !provider || !receiver || !resource || !unit) return null
-  return { url, provider, receiver, resource, unit, admin: process.env.INTERFACER_ZENFLOWS_ADMIN }
+  if (!provider || !unit) throw new Error("zenflows_provider_and_unit_required")
+  return { url, provider, unit, receiver: process.env.INTERFACER_ZENFLOWS_RECEIVER,
+    admin: process.env.INTERFACER_ZENFLOWS_ADMIN }
 }
 
 export type ZenflowsEventInput = {
@@ -38,16 +26,14 @@ export type ZenflowsEventInput = {
   quantity: number
   has_point_in_time: Date
   note?: string
-  // Bridge B: name + tracking id for the real per-listing/build resource.
   resource_name?: string
   resource_tracking_id?: string
-  // Bridge D: resolved real agents for this specific order (fall back to config).
   provider?: string
   receiver?: string
 }
 
 const RESOURCE_SPECS = `{ resourceSpecifications(first:50){ edges{ node{ id name } } } }`
-const RAISE = `mutation($e: EconomicEventCreateParams!, $r: EconomicResourceCreateParams!) {
+const CREATE_RESOURCE = `mutation($e: EconomicEventCreateParams!, $r: EconomicResourceCreateParams!) {
   createEconomicEvent(event: $e, newInventoriedResource: $r) {
     economicEvent { id resourceInventoriedAs { id } }
   }
@@ -55,32 +41,19 @@ const RAISE = `mutation($e: EconomicEventCreateParams!, $r: EconomicResourceCrea
 const TRANSFER = `mutation($e: EconomicEventCreateParams!) {
   createEconomicEvent(event: $e) { economicEvent { id } }
 }`
+const PROCESS = `mutation($p: ProcessCreateParams!) { createProcess(process: $p) { process { id } } }`
 
-async function zenflowsGql<T = any>(cfg: ZenflowsConfig, query: string, variables: any, fetchImpl: typeof fetch): Promise<T> {
+async function zenflowsGql(cfg: ZenflowsConfig, query: string, variables: unknown, fetchImpl: typeof fetch): Promise<any> {
   const headers: Record<string, string> = { "content-type": "application/json" }
   if (cfg.admin) headers["zenflows-admin"] = cfg.admin
-  const res = await fetchImpl(cfg.url, { method: "POST", headers, body: JSON.stringify({ query, variables }) })
+  const res = await fetchImpl(cfg.url, { method: "POST", headers, signal: AbortSignal.timeout(10_000),
+    body: JSON.stringify({ query, variables }) })
+  if (!res.ok) throw new Error("zenflows_http_error: " + res.status)
   const json: any = await res.json()
   if (json.errors?.length || !json.data) throw new Error("zenflows_error: " + JSON.stringify(json.errors ?? json))
-  return json.data as T
+  return json.data
 }
 
-let productSpecId: string | null = null
-async function productSpec(cfg: ZenflowsConfig, fetchImpl: typeof fetch): Promise<string> {
-  if (productSpecId) return productSpecId
-  const data = await zenflowsGql<{ resourceSpecifications: { edges: { node: { id: string; name: string } }[] } }>(
-    cfg, RESOURCE_SPECS, {}, fetchImpl,
-  )
-  const edges = data.resourceSpecifications.edges
-  const pick = edges.find(e => e.node.name === "Product") ?? edges.find(e => e.node.name === "Material") ?? edges[0]
-  if (!pick) throw new Error("zenflows_error: no resource specification to conform to")
-  productSpecId = pick.node.id
-  return productSpecId
-}
-
-// Writes the milestone to Zenflows and returns the created economic-event id, or
-// null when Zenflows is not configured. Throws on a configured-but-failed write
-// so the caller can keep the local receipt and surface the failure.
 export async function writeZenflowsEvent(
   input: ZenflowsEventInput,
   cfg: ZenflowsConfig | null = zenflowsConfig(),
@@ -89,26 +62,44 @@ export async function writeZenflowsEvent(
   if (!cfg) return null
   const provider = input.provider ?? cfg.provider
   const receiver = input.receiver ?? cfg.receiver
+  if (!provider || !receiver) throw new Error("zenflows_agents_required")
+  if (!Number.isFinite(input.quantity) || input.quantity <= 0) throw new Error("zenflows_positive_quantity_required")
   const when = input.has_point_in_time.toISOString()
   const quantity = { hasNumericalValue: input.quantity, hasUnit: cfg.unit }
-  const spec = await productSpec(cfg, fetchImpl)
-  const newResource = {
+  // Do not cache an id globally: a different URL/seed has a different registry.
+  const specs = await zenflowsGql(cfg, RESOURCE_SPECS, {}, fetchImpl)
+  const spec = specs.resourceSpecifications.edges.find((e: any) => e.node.name === "Product")?.node.id
+  if (!spec) throw new Error("zenflows_product_spec_required")
+  const resource = {
     name: input.resource_name ?? `Interfacer marketplace ${input.action}`,
     note: `interfacer-marketplace ${input.action}`,
     ...(input.resource_tracking_id ? { trackingIdentifier: input.resource_tracking_id } : {}),
   }
 
-  // Both milestones: RAISE the real per-listing/build resource (owned by the
-  // provider), then TRANSFER that exact resource to the buyer. This is the
-  // valid VF path without introducing a Process; a true `produce` output of a
-  // Process is a later refinement. The returned id is the transfer event.
-  const raised = await zenflowsGql(cfg, RAISE, {
-    e: { action: "raise", provider, receiver: provider, resourceConformsTo: spec, resourceQuantity: quantity, hasPointInTime: when, note: `${input.action} stock for ${input.note ?? input.action}` },
-    r: newResource,
+  let processId: string | undefined
+  if (input.action === "produce") {
+    const process = await zenflowsGql(cfg, PROCESS, { p: {
+      name: input.resource_name ?? "Interfacer build", note: input.note,
+      hasBeginning: when, hasEnd: when, finished: true,
+    } }, fetchImpl)
+    processId = process.createProcess?.process?.id
+    if (!processId) throw new Error("zenflows_process_missing")
+  }
+  const created = await zenflowsGql(cfg, CREATE_RESOURCE, {
+    e: { action: input.action === "produce" ? "produce" : "raise",
+      provider, receiver: provider, resourceConformsTo: spec, resourceQuantity: quantity,
+      hasPointInTime: when, note: input.note, ...(processId ? { outputOf: processId } : {}) },
+    r: resource,
   }, fetchImpl)
-  const resourceId = raised.createEconomicEvent.economicEvent.resourceInventoriedAs.id as string
-  const data = await zenflowsGql(cfg, TRANSFER, {
-    e: { action: "transfer", provider, receiver, resourceInventoriedAs: resourceId, resourceQuantity: quantity, hasPointInTime: when, note: input.note },
+  const resourceId = created.createEconomicEvent?.economicEvent?.resourceInventoriedAs?.id
+  if (!resourceId) throw new Error("zenflows_resource_missing")
+  const transferred = await zenflowsGql(cfg, TRANSFER, {
+    e: { action: "transfer", provider, receiver, resourceInventoriedAs: resourceId,
+      resourceQuantity: quantity, hasPointInTime: when, note: input.note },
   }, fetchImpl)
-  return data.createEconomicEvent.economicEvent.id as string
+  const eventId = transferred.createEconomicEvent?.economicEvent?.id
+  if (!eventId) throw new Error("zenflows_transfer_missing")
+  // Both receipt types link the final handover. The build's produce event is
+  // linked via the output resource and Process, not mislabeled as this id.
+  return eventId
 }

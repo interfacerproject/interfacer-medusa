@@ -126,6 +126,7 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
         // Bridge B: a real per-listing Zenflows resource, tracked to the catalog resource.
         resource_name: `Interfacer listing ${binding.catalog_resource_id}`,
         resource_tracking_id: binding.catalog_resource_id,
+        receiver: identity.zenflows_person_id ?? undefined,
       })
     } catch (e) {
       console.warn("[interfacer] zenflows transfer event failed; keeping local receipt only:", (e as Error).message)

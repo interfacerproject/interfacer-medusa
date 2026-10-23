@@ -1,3 +1,4 @@
+import { verifyCommerceOperation } from "../modules/interfacer/zenflows-person"
 import { authenticate, defineMiddlewares } from "@medusajs/framework/http"
 import type { AuthenticatedMedusaRequest, MedusaRequest, MedusaResponse, MedusaNextFunction } from "@medusajs/framework/http"
 import type { ICartModuleService } from "@medusajs/framework/types"
@@ -6,7 +7,7 @@ import { allowLocalRequest } from "./dev/interfacer/local-guard"
 import { allowStorefront } from "../storefront/dev"
 import { checkoutEvidence, refuse } from "../modules/interfacer/checkout-guard"
 
-import { authFromHeader, AUTH_HEADER, checkoutOperationParams, verifySignedOperation } from "../modules/interfacer/signed-envelope"
+import { authFromHeader, AUTH_HEADER, checkoutOperationParams } from "../modules/interfacer/signed-envelope"
 
 async function prepareCheckout(req: MedusaRequest, _res: MedusaResponse, next: MedusaNextFunction) {
   try {
@@ -16,7 +17,7 @@ async function prepareCheckout(req: MedusaRequest, _res: MedusaResponse, next: M
     if (evidence) {
       if ((req as AuthenticatedMedusaRequest).auth_context?.actor_id !== evidence.customerId) refuse("interfacer_cart_customer_mismatch")
       const auth = authFromHeader(req.headers[AUTH_HEADER])
-      verifySignedOperation(auth, "commerce.order.authorize", checkoutOperationParams(cart, evidence.purchase), evidence.purchase.buyer_person_id)
+      await verifyCommerceOperation(auth, "commerce.order.authorize", checkoutOperationParams(cart, evidence.purchase), evidence.purchase.buyer_person_id)
       // Written before completeCartWorkflow takes its snapshot. Native cart->order
       // conversion copies line metadata and cart metadata in Medusa 2.10.3.
       if (!cart.completed_at) {
@@ -33,7 +34,7 @@ async function prepareCheckout(req: MedusaRequest, _res: MedusaResponse, next: M
 }
 
 export default defineMiddlewares({ routes: [{
-  matcher: "/dev/store/(sign|capture)", method: "POST",
+  matcher: "/dev/store/(sign|capture|prepare)", method: "POST",
   middlewares: [(req, res, next) => { if (allowStorefront(req, res)) next() },
     authenticate("customer", ["session", "bearer"])],
 }, {

@@ -1,88 +1,160 @@
-# Zenflows bridge (bridges B/C/D)
+# Local Zenflows marketplace bridge
 
-How the marketplace writes **live ValueFlows economic events** to a locally-run
-Zenflows, and how to take it from the current coarse demo mapping to real
-per-entity actors and resources.
+Updated 2026-10-23. Continues Claude session `cbf47518` / commit `e65e053`.
+Work remains on `feat/zenflows-real-events`; no production/main changes.
 
-## Bridge C — live events (done)
+## What runs now
 
-A delivery (`transfer`) and a production (`produce`) milestone write a real
-`createEconomicEvent` to Zenflows, alongside the local `rea-receipt`. The event
-id is persisted on the receipt (`zenflows_event_id`) and shown in the GUI with a
-`LIVE` badge. See `medusa/src/modules/interfacer/zenflows-event.ts`.
+- **Stock:** seller-signed delivery → `raise` a per-listing EconomicResource →
+  `transfer` to the order's buyer.
+- **Build:** supplier-signed milestone → a finished ValueFlows **Process** →
+  `produce` its output (provider = receiver = supplier, `outputOf` = Process) →
+  `transfer` the output to the buyer. Quantity is the quoted lot quantity.
+- Both persist the **final handover/transfer event id** on `rea-receipt` and show
+  it in the GUI with **LIVE**. The receipt action `produce` describes the local
+  production milestone; its `zenflows_event_id` is the subsequent transfer, not
+  the Process or produce event. The latter remain queryable in Zenflows through
+  the order note/output resource.
+- A logged-in GUI buyer uses their **existing Interfacer browser wallet**, not
+  the disclosed fixture customer. The immutable identity link supplies the live
+  event receiver. Anonymous local demos retain the original fixture workflow.
 
-### Enable it
+Catalog/design/service inputs, merchant assertions and payments are still demo
+fixtures. The live seller and unit are an explicit environment mapping. This is
+not a production identity provider, remote PDP integration or supplier registry.
 
-Set these before `npm run dev:up` (unset → no-op, the marketplace runs
-stand-alone against the local `rea-receipts` sink only):
+## Enable live events
+
+Before `npm run dev:up`:
 
 ```bash
 export INTERFACER_ZENFLOWS_URL=http://localhost:8000/api
-export INTERFACER_ZENFLOWS_PROVIDER=<agent ULID>   # the seller/provider agent
-export INTERFACER_ZENFLOWS_RECEIVER=<agent ULID>   # the buyer person
-export INTERFACER_ZENFLOWS_RESOURCE=<resource ULID># the resource transferred/produced
-export INTERFACER_ZENFLOWS_UNIT=<unit ULID>        # e.g. the "one" unit
-# optional: export INTERFACER_ZENFLOWS_ADMIN=<hex>  # only if GQL_AUTH_CALLS=true
+export INTERFACER_ZENFLOWS_PROVIDER=<seller-agent-ULID>
+export INTERFACER_ZENFLOWS_UNIT=<unit-ULID>
+# Only for the anonymous fixture demo; verified buyers override this per order:
+export INTERFACER_ZENFLOWS_RECEIVER=<demo-buyer-Person-ULID>
+# Optional, if required by the local registry:
+# export INTERFACER_ZENFLOWS_ADMIN=<server-only-admin-value>
+npm run dev:up
 ```
 
-`dev-store.py` copies `os.environ` into the Medusa process, so exported vars pass
-through.
+`INTERFACER_ZENFLOWS_RESOURCE` is obsolete: each milestone creates its own
+resource. No fixed receiver is needed for verified buyer sessions. An unset URL
+keeps the standalone fixture demo working with local receipts only. A configured
+write failure yields a local-only receipt, never a false LIVE badge.
 
-### Getting the ULIDs
+Zenflows ids are **ULIDs**, not database UUIDs. Inspect via GraphQL:
 
-Zenflows GraphQL ids are **ULID** (26-char), not the UUID the DB shows. Fetch via
-GraphQL against the running local Zenflows:
+```graphql
+{
+  agents(first: 20) { edges { node { id name } } }
+  units(first: 10) { edges { node { id label } } }
+}
+```
+
+The adapter requires the seeded `Product` ResourceSpecification. It deliberately
+refuses an arbitrary fallback specification. Requests time out after 10 seconds;
+HTTP/GraphQL failures abort the remaining write sequence.
+
+### Compatible local stack
+
+- Zenflows PR #84, worktree `zenflows-pr84`, GraphQL `http://localhost:8000/api`.
+- SDK PR #7, built in `interfacer-client-wallet` and linked into the GUI.
+- GUI `interfacer-gui-medusa`, `http://localhost:3002`.
+- Medusa v2.10.3, `http://localhost:9000`.
+- Local signup requires a valid **base64 `ROOM_SALT`** in Zenflows.
+- This demo currently runs with **`GQL_AUTH_CALLS=false`, `AUTHZ_ENFORCE=false`**
+  (and the local unchecked flag). Those are local test settings, not deployment
+  advice. Enforced Zenflows writes still need the reviewed authorization/delegation
+  transport; an admin environment variable alone does not implement that policy.
+
+## Verified buyer protocol
+
+1. GUI loads the fixture catalog configuration (publishable key, channel, region).
+2. `GET /dev/store/session?person=<ULID>` issues a bounded, 60-second one-use
+   challenge. It is bound to that Person, not to a caller-chosen public key.
+3. The browser signs a P6a canonical envelope for `commerce.session.create` with
+   `{challenge}` using its existing Zenroom Ed25519 seed. Keypairoom stores this
+   seed/public key in **base58**. Browser WebCrypto and Node verify the same raw
+   UTF-8 bytes, preserving spaces inside strings; the GraphQL signing contract
+   is unsuitable because it removes spaces.
+4. `POST /dev/store/session` consumes the challenge **before awaiting I/O** and
+   fetches the Person's registered key from the configured Zenflows URL. Invalid
+   proof, unknown Person, wrong key and registry outage deny authentication. There
+   is no fallback to the fixture account and no private-key upload/enrollment.
+5. Under a per-Person database advisory lock, the server creates/reuses a native
+   Medusa customer + AuthIdentity and immutable `IdentityLink`. Only this verified
+   flow stamps `zenflows_person_id`. It returns a one-hour native customer bearer;
+   the browser keeps that token only in the client instance, not localStorage.
+6. `POST /dev/store/prepare` resolves authoritative cart/order operation facts for
+   that authenticated customer. Buyers sign checkout/build/capture themselves;
+   the server still independently verifies their registry key at protected writes
+   and in the native completion hook. No request can select a different receiver.
+7. `/dev/store/sign` refuses real buyer signing. It retains only the explicitly
+   disposable supplier milestone signatures for that buyer's own demo orders.
+
+The GUI proxy preserves the boundary: non-production, loopback socket/Host,
+same-origin requests, allowlisted paths/methods, no forwarded principal, no-store
+responses. It forwards proofs, never private keys. Saved cart/order state is
+namespaced by **run + native customer id + journey target**, so another account
+cannot restore the previous buyer's journey from localStorage.
+
+Migration `Migration20261023120000` adds nullable `zenflows_person_id`; older fixture
+links remain unverified and are not upgraded from an unproven HTTP assertion.
+Use the normal `medusa db:migrate` / `dev:up` setup. Never alter Medusa core tables
+with SQL to enroll a customer.
+
+## Evidence and commands
 
 ```bash
-curl -s -X POST http://localhost:8000/api -H 'content-type: application/json' \
-  -d '{"query":"{ agents(first:5){edges{node{id name}}} economicResources(first:5){edges{node{id name}}} units(first:2){edges{node{id label}}} }"}'
+# Pure matching, envelope, registry/challenge and economic-event adapter tests:
+npm run test:unit
+npm --prefix medusa run typecheck
+
+# In interfacer-gui-medusa:
+npm run test:market
+npm run check-types
+MARKET_LIVE_E2E=1 MARKET_E2E=1 TEST_BASE_URL=http://localhost:3002 \
+  ./node_modules/.bin/playwright test tests/market-identity.spec.ts tests/market.spec.ts \
+  --project=chromium --workers=1
 ```
 
-The local Zenflows (PR #84) seeds an org (`System Materials Repository`), material
-resources (PLA/ABS/PETG/…) and a `one` unit on migrate; a signed-up person (e.g.
-`Market Seven`) is a valid receiver. Two local-only flags are required for this to
-work: `ROOM_SALT` must be valid base64, and `AUTHZ_ENFORCE=false`
-(createPerson/createEconomicEvent are otherwise denied by the PR #84 authz PEP).
+Verified 2026-10-23: **21 backend unit tests, 20 GUI unit tests, both TypeScript
+checks, four Chromium journeys** (stock/build with both verified and demo buyers).
+The live suite registers disposable test People with fresh keys, drives actual GUI
+clicks, then queries Zenflows to prove the event receiver, `produce.outputOf` and
+finished Process. It also verifies session-proof replay refusal, real-buyer signer
+refusal, another account's order refusal, account-isolated persisted state and
+stock milestone retry reusing the same receipt/event id.
 
-## Bridges B/D — per-listing real resource + real agents (done)
+Example verified build: order `order_01M5M7K0D4YYBMTTPXTD6V2FAK`, buyer
+`06GPGYBV46E5SGA67HVW5JTVH8`, produce `06GPGYC3YHCAYB6GDJ9MSBBC7G`, Process
+`06GPGYC3X50B68VJHCD9BRA3KR`, handover `06GPGYC40P0P3A45S070MB9BV4`.
+Desktop/mobile Chromium captures (1440/390px) are under GUI `test-results/`.
+The historical **`npm run test:all` is also green, 9/9 suites**. Its stale guard
+assertion was aligned with the existing origin-less top-level navigation policy;
+foreign Origins remain refused, and session/prepare handlers now share the guard
+matrix. After verification the original bridge environment was restored and a
+fresh demo run was left serving **three available stock units**, retaining data.
+The live tests create retained local test data and consume finite stock; they never
+silently replenish it. A new explicit `dev:up` run publishes fresh synthetic units,
+retaining older orders/resources/receipts.
 
-Each delivery/production now **raises a real per-listing EconomicResource** (ValueFlows
-`raise`, conforming to the seeded `Product` spec, owned by the provider agent, named and
-`trackingIdentifier`-tagged to the marketplace catalog resource), then **transfers** that
-exact resource to the buyer. So `resourceInventoriedAs` is a real, distinct resource per
-listing (bridge B) between real agents — the seller org and the buyer person (bridge D).
-Verified: a GUI "Mark delivered" raised resource `06GP97B5ZR…` ("Interfacer listing
-01JTESTRESOURCE…") and transferred it (`06GP97B632…`, System Materials Repository →
-Market Seven), shown in the GUI with the LIVE badge.
+## Explicit limits
 
-### Remaining
+The match catalog is still seeded; seller identities still use the configured
+single demo provider rather than a per-supplier registry. DPP ids remain references;
+no successor passport or actual material/machine evidence is minted. A finished
+Process records the signed demo assertion, not physical proof or measured duration.
 
-The provider agent, the buyer person and the unit are still **one fixed seeded pair** read
-from env (the demo has one seller and one buyer). A true `produce` as the output of a VF
-`Process` (with `outputOf`) is a refinement over the current raise+transfer. Per-buyer
-identity (receiver = the signed-in Interfacer person of the order) is the next step.
-
-## Legacy note (bridge C, before B/D)
-
-The provider/receiver/resource env vars were a **coarse demo mapping**: every event used the
-same fixed Zenflows triple. B/D replaced the resource with a per-listing one; the agents are
-still the fixed seeded pair.
-
-- **Bridge B — real match data.** Designs and services (and the catalog's
-  resources) come from real Interfacer resources and registered providers, so the
-  event's `resourceInventoriedAs` is the actual listed resource. The matching
-  algorithm is already real; it needs real inputs.
-- **Bridge D — real identity.** Resolve the seller and buyer to their real Zenflows
-  agents (the buyer being the signed-in Interfacer person), so `provider` and
-  `receiver` are the actual parties, not a fixed pair.
-
-### Proposed path
-
-1. At marketplace setup, ensure/seed the real Zenflows entities (a provider org, a
-   resource per catalog product, the buyer person) and record their ULIDs where the
-   listing binding and the buyer identity are stored, rather than in four fixed env
-   vars.
-2. Make `writeZenflowsEvent` take the provider/receiver/resource **per order**,
-   resolved from the binding + identity, instead of the fixed config.
-3. The adapter and the receipt plumbing already carry the event id end-to-end; only
-   the resolution of the three ids changes.
+The receipt guard suppresses normal repeated milestones, **not** distributed
+exactly-once delivery. There is no durable outbox or cross-system transaction:
+Process/resource/event creation can commit before a lost response, failed transfer
+or failed local receipt insert. A local-only receipt is terminal in this version;
+reconciliation/recovery is separate work. Never blindly replay a partially failed
+remote write. General commerce envelopes retain the inherited ±5-minute acceptance
+window without durable nonce revocation/audience enforcement; only session
+challenges are one-use, in-memory and single-process. Registry changes are checked
+at each buyer write; this is not full service/PDP authorization or bearer revocation.
+An interrupted initial enrollment can leave an unused native customer, not a usable
+unverified account. Keep every fixture endpoint local.

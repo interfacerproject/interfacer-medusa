@@ -62,6 +62,7 @@ export async function produceBuild(container: MedusaContainer, orderId: string, 
         // Bridge B: a real produced Zenflows resource, tracked to the design.
         resource_name: `Interfacer build ${quote.design_id}`,
         resource_tracking_id: quote.design_id,
+        receiver: identity.zenflows_person_id ?? undefined,
       })
     } catch (e) {
       console.warn("[interfacer] zenflows produce event failed; keeping local receipt only:", (e as Error).message)
