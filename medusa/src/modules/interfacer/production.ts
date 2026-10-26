@@ -6,7 +6,7 @@ import type InterfacerService from "./service"
 import { requireLocalCommerce } from "./commerce-context"
 import { buildReferences, buildRefuse, readBuildQuote } from "./build-purchase"
 import { termsHash } from "./matching"
-import { writeZenflowsEvent } from "./zenflows-event"
+import { enqueueMilestone, resumeMilestone, runZenflowsSyncSafely, withSync, type MilestoneInput } from "./zenflows-outbox"
 
 // Explicit admin/supplier "produced" assertion, not a payment subscriber and not
 // a fabricated native fulfillment/delivery. The immutable receipt IS the local
@@ -50,31 +50,30 @@ export async function produceBuild(container: MedusaContainer, orderId: string, 
         !payments[0].captured_at || payments[0].canceled_at ||
         Number(payments[0].amount) !== quote.total_price_cents / 100) buildRefuse("build_upfront_payment_required")
     const [previous] = await integration.listReaReceipts({ order_id: orderId })
-    if (previous) return { created: false, receipt: previous }
-    const has_point_in_time = new Date()
-    // Bridge C: live Zenflows produce event (idempotent per order via the guard
-    // above); degrades gracefully to a local-only receipt on failure.
-    let zenflows_event_id: string | null = null
-    try {
-      zenflows_event_id = await writeZenflowsEvent({
-        action: "produce", quantity: quote.quantity, has_point_in_time,
-        note: `interfacer-marketplace produce order=${orderId} service=${quote.service_id}`,
-        // Bridge B: a real produced Zenflows resource, tracked to the design.
-        resource_name: `Interfacer build ${quote.design_id}`,
-        resource_tracking_id: quote.design_id,
-        receiver: identity.zenflows_person_id ?? undefined,
-      })
-    } catch (e) {
-      console.warn("[interfacer] zenflows produce event failed; keeping local receipt only:", (e as Error).message)
+    // A retry reuses the persisted milestone time, so its payload hashes identically.
+    const has_point_in_time = previous ? new Date(previous.has_point_in_time) : new Date()
+    const milestone: MilestoneInput = {
+      action: "produce", quantity: quote.quantity, has_point_in_time,
+      note: `interfacer-marketplace produce order=${orderId} service=${quote.service_id}`,
+      // A real produced Zenflows resource, tracked to the design.
+      resource_name: `Interfacer build ${quote.design_id}`,
+      resource_tracking_id: quote.design_id,
+      receiver: identity.zenflows_person_id ?? undefined,
     }
-    const receipt = await integration.createReaReceipts({
+    if (previous) return { created: false, ...await resumeMilestone(integration, previous, milestone) }
+    // Durable outbox (see delivery.ts): Process -> produce -> transfer run after
+    // the receipt and its pending sync row have committed together.
+    const { receipt, sync } = await enqueueMilestone(integration, {
       action: "produce", provider_id: quote.provider_person_id, receiver_id: identity.person_id,
       resource_id: quote.design_id, design_id: quote.design_id, service_id: quote.service_id,
       dpp_id: quote.origin_dpp_id!, origin_dpp_id: quote.origin_dpp_id,
       quote_id: quote.id, quote_hash: quote.quote_hash,
       order_id: orderId, quantity: quote.quantity, has_point_in_time,
-      zenflows_event_id,
-    })
-    return { created: true, receipt }
+    }, milestone)
+    // Re-read after commit: the in-transaction DTO lacks DB-committed fields, and
+    // retries/listings must see byte-identical receipts.
+    if (!sync) return { created: true, receipt: await integration.retrieveReaReceipt(receipt.id) }
+    const state = await runZenflowsSyncSafely(integration, sync.id)
+    return { created: true, receipt: withSync(await integration.retrieveReaReceipt(receipt.id), state) }
   })
 }

@@ -1,63 +1,58 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { writeZenflowsEvent, zenflowsConfig, type ZenflowsConfig } from "../modules/interfacer/zenflows-event"
+import { zenflowsConfig, zenflowsTransport, type ZenflowsConfig } from "../modules/interfacer/zenflows-event"
+import { assertSameSyncPayload, newSyncRow, syncPayloadFor, type MilestoneInput } from "../modules/interfacer/zenflows-outbox"
+import { milestonePayloadHash, ZenflowsRejected } from "../modules/interfacer/zenflows-sync"
 
 const cfg: ZenflowsConfig = { url: "http://zenflows.test/api", provider: "seller", receiver: "legacy-demo-buyer", unit: "one" }
-const input = { action: "produce" as const, quantity: 2, has_point_in_time: new Date("2026-10-23T12:00:00.000Z"),
+const input: MilestoneInput = { action: "produce", quantity: 2, has_point_in_time: new Date("2026-10-23T12:00:00.000Z"),
   resource_name: "Custom part", resource_tracking_id: "design-one", receiver: "verified-buyer", note: "order-one" }
-function zenflows() {
-  const calls: any[] = []
-  const f = (async (_url: any, init: any) => {
-    const call = JSON.parse(init.body)
-    calls.push(call)
-    let data
-    if (call.query.includes("resourceSpecifications")) data = { resourceSpecifications: { edges: [{ node: { id: "product-spec", name: "Product" } }] } }
-    else if (call.query.includes("createProcess")) data = { createProcess: { process: { id: "process-one" } } }
-    else data = { createEconomicEvent: { economicEvent: { id: call.variables.e.action + "-event", resourceInventoriedAs: { id: "resource-one" } } } }
-    return new Response(JSON.stringify({ data }))
-  }) as typeof fetch
-  return { calls, f }
-}
+const reply = (body: unknown, status = 200) => (async () => new Response(JSON.stringify(body), { status })) as typeof fetch
 
-test("build creates a finished Process, produces its output to the provider, then transfers it to the verified buyer", async () => {
-  const { calls, f } = zenflows()
-  assert.equal(await writeZenflowsEvent(input, cfg, f), "transfer-event")
-  const process = calls.find(c => c.query.includes("createProcess"))
-  assert.equal(process.variables.p.finished, true)
-  const events = calls.filter(c => c.variables.e).map(c => c.variables.e)
-  assert.deepEqual(events.map(e => e.action), ["produce", "transfer"])
-  assert.equal(events[0].outputOf, "process-one")
-  assert.equal(events[0].provider, "seller")
-  assert.equal(events[0].receiver, "seller")
-  assert.equal(events[1].receiver, "verified-buyer")
-  assert.equal(events[1].resourceInventoriedAs, "resource-one")
-  assert.deepEqual(events[1].resourceQuantity, { hasNumericalValue: 2, hasUnit: "one" })
-  assert.equal(calls.find(c => c.variables.r).variables.r.trackingIdentifier, "design-one")
+test("transport: GraphQL errors and HTTP 4xx are definite rejections; 5xx, network and malformed replies are ambiguous", async () => {
+  await assert.rejects(zenflowsTransport(cfg, reply({ errors: [{ message: "denied" }] }))("q", {}), ZenflowsRejected)
+  await assert.rejects(zenflowsTransport(cfg, reply({ data: null }, 403))("q", {}), ZenflowsRejected)
+  for (const f of [reply({ data: {} }, 502), reply({}),
+    (async () => { throw new Error("socket hang up") }) as typeof fetch]) {
+    await assert.rejects(zenflowsTransport(cfg, f)("q", {}), (e: Error) => !(e instanceof ZenflowsRejected))
+  }
+  assert.deepEqual(await zenflowsTransport(cfg, reply({ data: { ok: 1 } }))("q", {}), { ok: 1 })
 })
 
-test("stock still raises then transfers, without manufacturing a Process", async () => {
-  const { calls, f } = zenflows()
-  await writeZenflowsEvent({ ...input, action: "transfer", quantity: 1 }, cfg, f)
-  assert.ok(!calls.some(c => c.query.includes("createProcess")))
-  assert.deepEqual(calls.filter(c => c.variables.e).map(c => c.variables.e.action), ["raise", "transfer"])
+test("transport sends the server-only admin value only when configured", async () => {
+  const seen: Record<string, string>[] = []
+  const f = (async (_u: unknown, init: any) => { seen.push(init.headers); return new Response('{"data":{}}') }) as typeof fetch
+  await zenflowsTransport(cfg, f)("q", {})
+  await zenflowsTransport({ ...cfg, admin: "secret" }, f)("q", {})
+  assert.equal(seen[0]["zenflows-admin"], undefined)
+  assert.equal(seen[1]["zenflows-admin"], "secret")
 })
 
-test("standalone is a no-op; incomplete identities and invalid quantities never write", async () => {
-  const { calls, f } = zenflows()
-  assert.equal(await writeZenflowsEvent(input, null, f), null)
-  for (const quantity of [0, -1, NaN, Infinity]) await assert.rejects(writeZenflowsEvent({ ...input, quantity }, cfg, f))
-  await assert.rejects(writeZenflowsEvent({ ...input, receiver: undefined }, { ...cfg, receiver: undefined }, f))
-  assert.equal(calls.length, 0)
+test("payload: per-order verified buyer wins over the legacy receiver; bound to the registry URL", () => {
+  const p = syncPayloadFor(input, cfg)
+  assert.equal(p.receiver, "verified-buyer")
+  assert.equal(p.provider, "seller")
+  assert.equal(p.target, cfg.url)
+  assert.equal(p.has_point_in_time, "2026-10-23T12:00:00.000Z")
+  assert.equal(syncPayloadFor({ ...input, receiver: undefined }, cfg).receiver, "legacy-demo-buyer")
 })
 
-test("HTTP/GraphQL failure aborts before transfer; no process-global spec cache leaks across registries", async () => {
-  for (const f of [(async () => new Response('{"data":{}}', { status: 500 })),
-    (async () => new Response('{"errors":[{"message":"denied"}]}'))] as typeof fetch[])
-    await assert.rejects(writeZenflowsEvent(input, cfg, f))
-  const a = zenflows(), b = zenflows()
-  await writeZenflowsEvent(input, cfg, a.f)
-  await writeZenflowsEvent(input, { ...cfg, url: "http://other/api" }, b.f)
-  assert.ok(b.calls.some(c => c.query.includes("resourceSpecifications")))
+test("payload: invalid quantities and missing agents never form a sync row; standalone forms none", () => {
+  for (const quantity of [0, -1, NaN, Infinity]) assert.throws(() => syncPayloadFor({ ...input, quantity }, cfg))
+  assert.throws(() => syncPayloadFor({ ...input, receiver: undefined }, { ...cfg, receiver: undefined }), /zenflows_agents_required/)
+  assert.equal(newSyncRow("order-one", { ...input, receiver: undefined }, { ...cfg, receiver: undefined }), null)
+  assert.equal(newSyncRow("order-one", input, null), null)
+  const row = newSyncRow("order-one", input, cfg)!
+  assert.equal(row.payload_hash, milestonePayloadHash(row.payload))
+  assert.match(row.marker, /^ifzs-[0-9a-f]{32}$/)
+})
+
+test("same idempotency key, changed payload: refused as a conflict", () => {
+  const row = newSyncRow("order-one", input, cfg)!
+  assert.doesNotThrow(() => assertSameSyncPayload(row, syncPayloadFor(input, cfg)))
+  for (const changed of [syncPayloadFor({ ...input, receiver: "someone-else" }, cfg),
+    syncPayloadFor(input, { ...cfg, url: "http://other/api" }), syncPayloadFor({ ...input, quantity: 3 }, cfg)])
+    assert.throws(() => assertSameSyncPayload(row, changed), /zenflows_sync_payload_conflict/)
 })
 
 test("legacy resource and receiver environment variables are not required for per-order buyers", () => {

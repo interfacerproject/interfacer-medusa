@@ -5,7 +5,7 @@ import { createOrderFulfillmentWorkflow, markOrderFulfillmentAsDeliveredWorkflow
 import { requireLocalCommerce, seedCommerce } from "./commerce-context"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
-import { writeZenflowsEvent } from "./zenflows-event"
+import { enqueueMilestone, resumeMilestone, runZenflowsSyncSafely, withSync, type MilestoneInput } from "./zenflows-outbox"
 
 function refuse(reason: string): never {
   throw new MedusaError(MedusaError.Types.NOT_ALLOWED, reason)
@@ -113,30 +113,28 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
       refuse("interfacer_delivery_required")
     }
     const [previous] = await integration.listReaReceipts({ order_id: orderId })
-    if (previous) return { created: false, receipt: previous }
     const has_point_in_time = new Date(delivered.delivered_at!)
-    // Bridge C: write the LIVE Zenflows economic event first (idempotent per
-    // order via the guard above). A configured-but-failed write degrades
-    // gracefully: the local receipt is still the record, with a null event id.
-    let zenflows_event_id: string | null = null
-    try {
-      zenflows_event_id = await writeZenflowsEvent({
-        action: "transfer", quantity: Number(line.quantity), has_point_in_time,
-        note: `interfacer-marketplace transfer order=${orderId}`,
-        // Bridge B: a real per-listing Zenflows resource, tracked to the catalog resource.
-        resource_name: `Interfacer listing ${binding.catalog_resource_id}`,
-        resource_tracking_id: binding.catalog_resource_id,
-        receiver: identity.zenflows_person_id ?? undefined,
-      })
-    } catch (e) {
-      console.warn("[interfacer] zenflows transfer event failed; keeping local receipt only:", (e as Error).message)
+    const milestone: MilestoneInput = {
+      action: "transfer", quantity: Number(line.quantity), has_point_in_time,
+      note: `interfacer-marketplace transfer order=${orderId}`,
+      // A real per-listing Zenflows resource, tracked to the catalog resource.
+      resource_name: `Interfacer listing ${binding.catalog_resource_id}`,
+      resource_tracking_id: binding.catalog_resource_id,
+      receiver: identity.zenflows_person_id ?? undefined,
     }
-    const receipt = await integration.createReaReceipts({
+    if (previous) return { created: false, ...await resumeMilestone(integration, previous, milestone) }
+    // Durable outbox: receipt + pending Zenflows sync commit first, then the
+    // live write runs (inline here, else the scheduled job). A failed or lost
+    // remote step stays pending and is reconciled, never blindly replayed.
+    const { receipt, sync } = await enqueueMilestone(integration, {
       action: "transfer", provider_id: binding.seller_agent_id, receiver_id: identity.person_id,
       resource_id: binding.catalog_resource_id, dpp_id: binding.source_dpp_id,
       order_id: orderId, quantity: Number(line.quantity), has_point_in_time,
-      zenflows_event_id,
-    })
-    return { created: true, receipt }
+    }, milestone)
+    // Re-read after commit: the in-transaction DTO lacks DB-committed fields, and
+    // retries/listings must see byte-identical receipts.
+    if (!sync) return { created: true, receipt: await integration.retrieveReaReceipt(receipt.id) }
+    const state = await runZenflowsSyncSafely(integration, sync.id)
+    return { created: true, receipt: withSync(await integration.retrieveReaReceipt(receipt.id), state) }
   })
 }

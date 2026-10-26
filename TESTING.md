@@ -2064,6 +2064,73 @@ within five minutes; existing business idempotency still applies. This is not a
 single-use replay guarantee. The fuller P6 hardening/UI tranche remains separate.
 [Full format, enforcement paths, real-vs-local boundaries and findings](docs/phase6a-findings.md).
 
+## P7 — Durable Zenflows milestone outbox
+
+Design: [`docs/superpowers/specs/2026-10-26-marketplace-hardening-design.md`](docs/superpowers/specs/2026-10-26-marketplace-hardening-design.md) (G1),
+operator notes in [`docs/zenflows-bridge.md`](docs/zenflows-bridge.md#durable-milestone-outbox-p7).
+
+### Unit (pure executor against an in-memory Zenflows)
+
+```bash
+npm run test:unit        # 36 tests, includes src/tests/zenflows-sync.test.ts
+npm --prefix medusa run typecheck
+```
+
+The fake implements Zenflows' note filter, the `EconomicResource.previous` rule,
+transfer destinations inheriting the source note, and `processes(after)` id
+paging. The tests cover:
+- build/stock happy paths;
+- a lost response after the Process, the produce and the transfer commit;
+- an ambiguous failure deferred inside the 60 s window, then re-sent once;
+- a late commit, found and not duplicated;
+- a rejected transfer, retried;
+- a local save failing right after a remote commit, followed by an executor
+  restart;
+- tampered payload and changed target (zero calls);
+- duplicate marker (blocked), facts mismatch (blocked);
+- the id lower bound against a real Zenflows Process id.
+
+### Live, against the real local Zenflows (2026-10-26)
+
+```bash
+node scripts/zenflows-fault-proxy.cjs &                       # :8100 -> Zenflows :8000
+INTERFACER_ZENFLOWS_URL=http://127.0.0.1:8100/api INTERFACER_ZENFLOWS_PROVIDER=<org> \
+  INTERFACER_ZENFLOWS_UNIT=<unit> INTERFACER_ZENFLOWS_RECEIVER=<demo buyer> npm run dev:up
+python3 scripts/p7-outbox-probe.py faults
+python3 scripts/p7-outbox-probe.py restart-prepare && npm run dev:down && <dev:up again> \
+  && python3 scripts/p7-outbox-probe.py restart-verify
+(cd medusa && medusa exec ./src/scripts/verify-p7-outbox.ts)  # same DATABASE_URL
+```
+
+Each scenario drives a real signed milestone, injects one failure through the
+proxy and recovers. It then queries Zenflows for the marker and asserts:
+- exactly 2 resources (source + transfer destination);
+- exactly 1 creation event and 1 transfer;
+- exactly 1 finished Process for builds, with `produce.outputOf` matching;
+- the receipt's handover id equals the sync's transfer id and the Zenflows event.
+
+Actual output:
+
+```
+PASS P7 LOST RESPONSE createProcess: ... first=process/fetch failed -> done after 1 failed attempt(s); exactly one of each remote object
+PASS P7 LOST RESPONSE produce: ... first=create/fetch failed -> done ...
+PASS P7 LOST RESPONSE transfer: ... first=transfer/fetch failed -> done ...
+PASS P7 REJECTED transfer: ... first=-/zenflows_error: [{"message":"fault-proxy: injected rejection"}] -> done ...
+PASS P7 LATE COMMIT produce: ... first=create/fetch failed -> done ...
+PASS P7 ZENFLOWS DOWN produce (settle window): ... no re-send inside 60 s, done after it
+PASS P7 LOST RESPONSE raise (stock): ... done ...
+PASS P7 RESTART: ... drained by the scheduled job after a Medusa restart; exactly one Process/produce/transfer
+PASS P7 ATOMIC: failed outbox insert (duplicate marker) rolled back its receipt; 0 receipts / 0 syncs
+```
+
+An unplanned real-world case also occurred. The first live run hit the
+receipts' immutability trigger at completion, which is the "local DB failure
+after remote commit" case. After the fix (the receipt row is never updated;
+the id lives on the sync), the scheduled job completed that row on its own: one
+Process, one produce, one transfer, the same transfer id. GUI journeys:
+`MARKET_LIVE_E2E=1 MARKET_E2E=1 playwright test tests/market-identity.spec.ts tests/market.spec.ts`
+gives 4/4. The historical standalone harness `npm run test:all` gives 9/9.
+
 ## Inputs and authority
 
 - `docs/fixtures/economic-resource.json`: synthetic resource with name and controller.

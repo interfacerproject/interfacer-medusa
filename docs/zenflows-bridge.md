@@ -1,6 +1,7 @@
 # Local Zenflows marketplace bridge
 
-Updated 2026-10-23. Continues Claude session `cbf47518` / commit `e65e053`.
+Updated 2026-10-26 (P7 durable outbox). Earlier: 2026-10-23, Claude session
+`cbf47518` / commit `e65e053`, pi session `01a16863`.
 Work remains on `feat/zenflows-real-events`; no production/main changes.
 Review snapshot: [bilingual field guide](review/README.md), backend PR #1 and GUI
 PR #922; implementation pins `ef02bdb` / `9c503df`. The old Claude cloud artifact
@@ -13,11 +14,19 @@ is historical, not the maintained copy.
 - **Build:** supplier-signed milestone → a finished ValueFlows **Process** →
   `produce` its output (provider = receiver = supplier, `outputOf` = Process) →
   `transfer` the output to the buyer. Quantity is the quoted lot quantity.
-- Both persist the **final handover/transfer event id** on `rea-receipt` and show
-  it in the GUI with **LIVE**. The receipt action `produce` describes the local
-  production milestone; its `zenflows_event_id` is the subsequent transfer, not
-  the Process or produce event. The latter remain queryable in Zenflows through
-  the order note/output resource.
+- **Durable outbox (P7):** the immutable receipt and an `interfacer_zenflows_sync`
+  row commit in **one transaction before any remote write**. The sync then runs
+  inline, from the per-minute `interfacer-zenflows-sync` job or from
+  `POST /dev/interfacer/zenflows-sync/:id/retry`. Every Process, event and
+  resource note carries `interfacer-sync=<marker>`. A step is marked inflight
+  before it is sent and checkpointed after; an ambiguous failure is reconciled by
+  searching Zenflows for the marker, **never replayed blind** (details below).
+- The receipt view exposes the **final handover/transfer event id** as
+  `zenflows_event_id` and shows it in the GUI with **LIVE**. For outbox receipts
+  it comes from the done sync row, because receipt rows are immutable (DB
+  trigger). The receipt action `produce` describes the local production milestone;
+  its event id is the subsequent transfer. The Process and produce ids are on the
+  sync row (`process_id`, `creation_event_id`).
 - A logged-in GUI buyer uses their **existing Interfacer browser wallet**, not
   the disclosed fixture customer. The immutable identity link supplies the live
   event receiver. Anonymous local demos retain the original fixture workflow.
@@ -44,7 +53,44 @@ npm run dev:up
 `INTERFACER_ZENFLOWS_RESOURCE` is obsolete: each milestone creates its own
 resource. No fixed receiver is needed for verified buyer sessions. An unset URL
 keeps the standalone fixture demo working with local receipts only. A configured
-write failure yields a local-only receipt, never a false LIVE badge.
+write failure leaves **SYNC PENDING** (retried with backoff
+`min(5 s · 2^attempts, 10 min)`), never a false LIVE badge. A milestone that
+cannot be mapped (the anonymous fixture buyer without a configured receiver)
+stays LOCAL ONLY, as before.
+
+## Durable milestone outbox (P7)
+
+Steps: build `process → create (produce, outputOf) → transfer`; stock
+`create (raise) → transfer`.
+
+| Failure | What the row does |
+| --- | --- |
+| GraphQL `errors` / HTTP 4xx | definite: Zenflows rolled back. Inflight cleared, step re-sent on retry |
+| network, timeout, 5xx, unreadable reply, local save failing after the send | ambiguous: inflight kept. Next run **reconciles first** |
+| reconcile finds exactly one marked object with matching provider/receiver/quantity/`outputOf` | checkpointed, no re-send |
+| reconcile finds none, attempt < 60 s old | deferred: the original may still commit |
+| reconcile finds none, attempt ≥ 60 s old | inflight cleared, step sent again |
+| several marked objects / different facts | `blocked: zenflows_reconcile_duplicate` / `_mismatch`: operator decides |
+| stored payload hash differs | `blocked: zenflows_sync_payload_tampered`, zero remote calls |
+| configured Zenflows URL changed | `blocked: zenflows_sync_target_changed` |
+| milestone retried with different facts for the same order | HTTP 409 `zenflows_sync_payload_conflict` |
+
+Reconciliation reads:
+- **create:** `economicResources(filter:{note: marker})`, then each resource's
+  `previous` events.
+- **transfer:** the destination inherits the source note.
+- **process:** Zenflows ids start with a 48-bit ms timestamp. The executor pages
+  `processes(after: <id lower bound of inflight_at − 5 min>)`.
+
+Operator view: `GET /dev/interfacer/zenflows-sync` (marker, status, attempts,
+last error, ids). Receipts created before P7 carry no marker. They stay LOCAL
+ONLY and are deliberately not recovered, since recovering them could duplicate
+events.
+
+Live fault test tool: `scripts/zenflows-fault-proxy.cjs`, a loopback proxy in
+front of Zenflows with modes `lose-response | late | down | reject`. Run
+`dev:up` with `INTERFACER_ZENFLOWS_URL=http://127.0.0.1:8100/api`, then
+`python3 scripts/p7-outbox-probe.py faults|restart-prepare|restart-verify`.
 
 Zenflows ids are **ULIDs**, not database UUIDs. Inspect via GraphQL:
 
@@ -150,12 +196,19 @@ single demo provider rather than a per-supplier registry. DPP ids remain referen
 no successor passport or actual material/machine evidence is minted. A finished
 Process records the signed demo assertion, not physical proof or measured duration.
 
-The receipt guard suppresses normal repeated milestones, **not** distributed
-exactly-once delivery. There is no durable outbox or cross-system transaction:
-Process/resource/event creation can commit before a lost response, failed transfer
-or failed local receipt insert. A local-only receipt is terminal in this version;
-reconciliation/recovery is separate work. Never blindly replay a partially failed
-remote write. General commerce envelopes retain the inherited ±5-minute acceptance
+The P7 outbox gives at-most-once remote objects plus eventual completion under
+lost responses, failed steps, local failures and restarts. It relies on these
+explicit assumptions:
+- Nothing else writes Zenflows objects carrying an `ifzs` marker.
+- A GraphQL error means a rollback.
+- No request can still commit 60 s after it was sent (the client timeout is
+  10 s).
+- The Medusa and Zenflows clocks are within 5 min of each other. That holds
+  locally: same host.
+
+Blocked rows need an operator; there is no resolution UI beyond the status. This
+is still not a cross-system transaction: a Zenflows object can exist minutes
+before its row is checkpointed. General commerce envelopes retain the inherited ±5-minute acceptance
 window without durable nonce revocation/audience enforcement; only session
 challenges are one-use, in-memory and single-process. Registry changes are checked
 at each buyer write; this is not full service/PDP authorization or bearer revocation.
