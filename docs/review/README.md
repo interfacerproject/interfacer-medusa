@@ -1,7 +1,9 @@
 # Medusa reviewers’ field guide
 
-Canonical evidence snapshot: **2026-10-23**. Implementation pins are the tested
-backend `ef02bdb` and GUI `9c503df`; documentation commits can follow them.
+Canonical evidence snapshot: **2026-10-26** (P7 outbox, P8 real actors, P9
+enforced Zenflows authz). Implementation pins are the tested backend `8018cb4`
+and GUI `f76a53e`; documentation commits can follow them. Previous snapshot:
+2026-10-23 (`ef02bdb` / `9c503df`).
 
 - `field-guide.mjs`: canonical equivalent English/Italian chapter.
 - `build.mjs`: builds the standalone `index.html`; no dependencies.

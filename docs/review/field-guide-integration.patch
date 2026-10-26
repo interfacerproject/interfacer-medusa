@@ -5,7 +5,7 @@
 +import {medusa} from '../interfacer-medusa/docs/review/field-guide.mjs';
 +export const pages=[...story,...implementation,medusa];
 @@ -13,0 +15,5 @@
-+ ['interfacer-medusa',1,'master',L('Registered buyer wallets + live Process/produce/transfer (23 Oct)','Wallet acquirente registrato + Process/produce/transfer live (23 ott)'),'draft'],
++ ['interfacer-medusa',1,'master',L('Durable outbox, real sellers, enforced Zenflows authz (26 Oct)','Outbox durevole, venditori reali, autorizzazioni Zenflows attive (26 ott)'),'draft'],
 + ['interfacer-gui',922,'#921',L('Marketplace GUI + buyer wallet + local proxy (23 Oct)','GUI marketplace + wallet acquirente + proxy locale (23 ott)'),'draft'],
 + ['interfacer-gui',921,'main',L('Commerce dev spike — marketplace GUI base','Spike commerce dev — base GUI marketplace'),'draft'],
 + ['zenflows',84,'#80',L('Local marketplace compatibility target; authz-pdp base','Target locale marketplace; base authz-pdp'),'draft'],
@@ -24,7 +24,7 @@
 --- a/README.md
 +++ b/README.md
 @@ -19,0 +20 @@
-+- Medusa marketplace (23 October / ottobre 2026): http://127.0.0.1:3110/it/medusa.html · /en/medusa.html
++- Medusa marketplace (26 October / ottobre 2026): http://127.0.0.1:3110/it/medusa.html · /en/medusa.html
 @@ -33 +34 @@
 -Ten equivalent chapters in each language: overview; backend identity/policy;
 +Twelve equivalent chapters in each language: overview; backend identity/policy;
@@ -59,12 +59,12 @@
 +test('twelve complete, structurally equivalent English/Italian chapters',()=>{
 + assert.equal(pages.length,12);
 @@ -51,0 +52,9 @@
-+test('Medusa review snapshot distinguishes verified buyers, real production and remaining catalog/outbox work',()=>{
++test('Medusa review snapshot covers the durable outbox, real sellers and enforced Zenflows authz',()=>{
 + const page=pages.find(p=>p.id==='medusa');
 + assert.ok(page);
 + for(const lang of ['en','it']){
 +  const text=page.sections.map(s=>s.body[lang]).join(' ');
-+  for(const term of ['outputOf','21','20','9/9','interfacer-gui-h0n','interfacer-gui-nhn'])assert.ok(text.includes(term),lang+': '+term);
++  for(const term of ['outputOf','50','28','9/9','interfacer-gui-h0n','interfacer-gui-nhn','interfacer-gui-dz7'])assert.ok(text.includes(term),lang+': '+term);
 +  assert.ok(page.sources.every(s=>/\/blob\/[0-9a-f]{40}\//.test(s.url)));
 + }
 +});
