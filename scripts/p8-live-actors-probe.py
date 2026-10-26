@@ -19,7 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT / "scripts"))
-from live_actors import CAPABILITIES, REQUIREMENTS, Wallet, actor, c, events_of, reason, sign, zf  # noqa: E402
+from live_actors import CAPABILITIES, REQUIREMENTS, Wallet, actor, awaiting, c, events_of, finish, reason, sign, zf  # noqa: E402
 
 
 def main():
@@ -76,6 +76,23 @@ def main():
     maker = Wallet("maker", pid["maker"], scene)
     assert "seller_order_required" in reason("/dev/store/prepare", {"action": "deliver", "orderId": stock_order}, token=maker.token, key=maker.key)
     receipt = seller.signed(f"/dev/interfacer/orders/{stock_order}/deliver", {}, {"action": "deliver", "orderId": stock_order}, expected=201)["receipt"]
+    if awaiting(receipt):
+        # Enforced Zenflows authz: only the provider gets the body; only their
+        # signature over Medusa's exact body is relayed.
+        sid = receipt["zenflows_sync"]["id"]
+        denied = c.request(f"/dev/store/zenflows-sync/{sid}/next", None, buyer.token, buyer.key, expected=400)
+        assert denied["message"] == "seller_order_required", denied
+        nxt = seller.call(f"/dev/store/zenflows-sync/{sid}/next")
+        assert nxt["step"] == "transfer" and pid["seller"] in nxt["body"] and pid["buyer"] in nxt["body"]
+        forged = nxt["body"].replace(pid["buyer"], pid["outsider"])
+        assert reason(f"/dev/store/zenflows-sync/{sid}/sign", {"step": "transfer", "body": forged,
+            "signature": actor("zsign", "seller", forged)}, token=seller.token, key=seller.key) == "relay_body_mismatch"
+        assert reason(f"/dev/store/zenflows-sync/{sid}/sign", {"step": "transfer", "body": nxt["body"],
+            "signature": actor("zsign", "buyer", nxt["body"])}, token=seller.token, key=seller.key) == "relay_signature_invalid"
+        assert reason(f"/dev/store/zenflows-sync/{sid}/sign", {"step": "create", "body": nxt["body"],
+            "signature": actor("zsign", "seller", nxt["body"])}, token=seller.token, key=seller.key) == "relay_step_mismatch"
+        print("PASS P8 RELAY: buyer gets no body; tampered body, wrong signer and wrong step refused before any send", flush=True)
+    receipt = finish(seller, receipt)
     assert receipt["zenflows_sync"]["status"] == "done" and receipt["zenflows_event_id"], receipt
     src = events_of(product)
     assert float(src["onhandQuantity"]["hasNumericalValue"]) == 1 and src["primaryAccountable"]["id"] == pid["seller"]
@@ -94,7 +111,7 @@ def main():
     buyer.signed("/dev/interfacer/build-orders", {"cartId": cid, "quoteId": quote["id"]}, {"action": "build", "cartId": cid, "quoteId": quote["id"]})
     build_order = buyer.pay_and_complete(cid)
     assert "seller_order_required" in reason("/dev/store/prepare", {"action": "produce", "orderId": build_order}, token=seller.token, key=seller.key)
-    receipt = maker.signed(f"/dev/interfacer/build-orders/{build_order}/produce", {}, {"action": "produce", "orderId": build_order}, expected=201)["receipt"]
+    receipt = finish(maker, maker.signed(f"/dev/interfacer/build-orders/{build_order}/produce", {}, {"action": "produce", "orderId": build_order}, expected=201)["receipt"])
     assert receipt["provider_id"] == pid["maker"] and receipt["zenflows_sync"]["status"] == "done", receipt
     sync = receipt["zenflows_sync"]
     produced = events_of(sync["resource_id"])
@@ -110,7 +127,8 @@ def main():
     unit = zf("{ instanceVariables { units { unitOne { id } } } }")["instanceVariables"]["units"]["unitOne"]["id"]
     zf("""mutation($e: EconomicEventCreateParams!) { createEconomicEvent(event: $e) { economicEvent { id } } }""",
        {"e": {"action": "transfer", "provider": pid["maker"], "receiver": pid["outsider"], "resourceInventoriedAs": service,
-              "resourceQuantity": {"hasNumericalValue": 1, "hasUnit": unit}, "hasPointInTime": "2026-10-26T18:00:00.000Z"}})
+              "resourceQuantity": {"hasNumericalValue": 1, "hasUnit": unit}, "hasPointInTime": "2026-10-26T18:00:00.000Z"}},
+       as_alias="maker")
     rematch = buyer.call("/dev/interfacer/match", {"designId": design})
     assert not any(m["service"]["id"] == service for m in rematch["matches"])
     assert any(r["service"]["id"] == service and r["reason"] == "catalog_owner_changed" for r in rematch["rejected"]), rematch["rejected"]

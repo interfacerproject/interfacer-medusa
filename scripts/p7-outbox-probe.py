@@ -22,7 +22,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT / "scripts"))
-from live_actors import build_order, c, marketplace, milestone, stock_order  # noqa: E402
+from live_actors import Wallet, build_order, c, marketplace, milestone, relay, stock_order, zf  # noqa: E402
 PROXY = os.environ.get("FAULT_PROXY", "http://127.0.0.1:8100")
 ZENFLOWS = os.environ.get("ZENFLOWS_DIRECT", "http://127.0.0.1:8000/api")
 STATE = ROOT / ".tmp/p7-restart.json"
@@ -46,12 +46,6 @@ def clear():
 
 def writes_sent():
     return [e for e in http(PROXY + "/__fault")["log"] if e["kind"] != "read"]
-
-
-def zf(query, variables=None):
-    out = http(ZENFLOWS, {"query": query, "variables": variables or {}})
-    assert not out.get("errors"), out
-    return out["data"]
 
 
 def sync_for(buyer, order_id):
@@ -104,27 +98,38 @@ def assert_exactly_once(buyer, order_id, kind):
     return sync, transfer
 
 
+def settle(m, kind, sync_id):
+    """Recover the way production does: reconcile (job/retry), then, under
+    enforced Zenflows authz, the seller/maker signs any write still missing."""
+    sync = retry(m["buyer"], sync_id)
+    if sync["status"] == "pending" and (sync.get("last_error") or "").startswith("awaiting_seller_signature"):
+        sync = relay(m["maker"] if kind == "build" else m["seller"], sync_id)
+    return sync
+
+
 def scenario(m, name, kind, mode, match, delay_ms=3000):
     clear()
     buyer = m["buyer"]
     order_id = build_order(m) if kind == "build" else stock_order(m, m["listings"].pop())
     fault(mode, match, delay_ms=delay_ms)
-    receipt = milestone(m, kind, order_id)
+    receipt = milestone(m, kind, order_id)  # inline run; enforced mode: the seller's relay loop
     first = receipt["zenflows_sync"]
-    assert first["status"] == "pending" and not receipt["zenflows_event_id"], receipt
-    before = len(writes_sent())
-    if mode == "down":
-        again = retry(buyer, first["id"])
-        assert again["status"] == "pending" and again["inflight_step"], again
-        assert len(writes_sent()) == before, "inside the settle window nothing is re-sent"
-        time.sleep(62)
-    if mode == "late":
-        again = retry(buyer, first["id"])
-        assert again["status"] == "pending", again
-        time.sleep(delay_ms / 1000 + 2)
-    retry(buyer, first["id"])
+    assert any(e["fault"] == mode for e in http(PROXY + "/__fault")["log"]), "the injected fault must have fired"
+    if first["status"] != "done":
+        assert not receipt["zenflows_event_id"], receipt
+        before = len(writes_sent())
+        if mode == "down":
+            again = retry(buyer, first["id"])
+            assert again["status"] == "pending" and again["inflight_step"], again
+            assert len(writes_sent()) == before, "inside the settle window nothing is re-sent"
+            time.sleep(62)
+        if mode == "late":
+            again = retry(buyer, first["id"])
+            assert again["status"] == "pending", again
+            time.sleep(delay_ms / 1000 + 2)
+        settle(m, kind, first["id"])
     sync, transfer = assert_exactly_once(buyer, order_id, kind)
-    print(f"PASS P7 {name}: order={order_id} first={first['inflight_step'] or '-'}/{first['last_error']} "
+    print(f"PASS P7 {name}: order={order_id} first={first['status']}/{first['inflight_step'] or '-'}/{first['last_error']} "
           f"-> done after {sync['attempts']} failed attempt(s); exactly one of each remote object; "
           f"handover {transfer['id']}", flush=True)
 
@@ -132,16 +137,16 @@ def scenario(m, name, kind, mode, match, delay_ms=3000):
 def faults(only=None):
     m = marketplace(stock_units=2)
     try:
-        if only == "stock":
-            return scenario(m, "LOST RESPONSE transfer (live stock)", "stock", "lose-response", "transfer")
-        scenario(m, "LOST RESPONSE createProcess", "build", "lose-response", "createProcess")
-        scenario(m, "LOST RESPONSE produce", "build", "lose-response", "produce")
-        scenario(m, "LOST RESPONSE transfer", "build", "lose-response", "transfer")
-        scenario(m, "REJECTED transfer", "build", "reject", "transfer")
-        scenario(m, "LATE COMMIT produce", "build", "late", "produce")
-        scenario(m, "ZENFLOWS DOWN produce (settle window)", "build", "down", "produce")
-        scenario(m, "LOST RESPONSE transfer (live stock)", "stock", "lose-response", "transfer")
-        scenario(m, "REJECTED transfer (live stock)", "stock", "reject", "transfer")
+        for args in [("LOST RESPONSE createProcess", "build", "lose-response", "createProcess"),
+                     ("LOST RESPONSE produce", "build", "lose-response", "produce"),
+                     ("LOST RESPONSE transfer", "build", "lose-response", "transfer"),
+                     ("REJECTED transfer", "build", "reject", "transfer"),
+                     ("LATE COMMIT produce", "build", "late", "produce"),
+                     ("ZENFLOWS DOWN produce (settle window)", "build", "down", "produce"),
+                     ("LOST RESPONSE transfer (live stock)", "stock", "lose-response", "transfer"),
+                     ("REJECTED transfer (live stock)", "stock", "reject", "transfer")]:
+            if not only or only.lower() in args[0].lower():
+                scenario(m, *args)
     finally:
         clear()
 
@@ -153,7 +158,7 @@ def restart_prepare():
     fault("down", "*", times=1000)
     receipt = milestone(m, "build", order_id)
     assert receipt["zenflows_sync"]["status"] == "pending", receipt
-    STATE.write_text(json.dumps({"order_id": order_id}))
+    STATE.write_text(json.dumps({"order_id": order_id, "maker": m["pid"]["maker"]}))
     print(f"PREPARED P7 RESTART: order={order_id} sync pending with Zenflows down; now restart Medusa, then clear faults", flush=True)
 
 
@@ -165,15 +170,23 @@ class Operator:
 
 
 def restart_verify():
-    order_id = json.loads(STATE.read_text())["order_id"]
+    state = json.loads(STATE.read_text())
+    order_id = state["order_id"]
     buyer = Operator()
     clear()
     deadline = time.time() + 240
-    while time.time() < deadline and sync_for(buyer, order_id)["status"] == "pending":
+    sync = sync_for(buyer, order_id)
+    while time.time() < deadline and sync["status"] == "pending" and \
+            not (sync.get("last_error") or "").startswith("awaiting_seller_signature"):
         time.sleep(5)
+        sync = sync_for(buyer, order_id)
+    signed = sync["status"] == "pending"
+    if signed:  # enforced authz: the restarted job reconciled; the maker signs the rest
+        relay(Wallet("maker", state["maker"], c.request("/dev/store/config")), sync["id"])
     sync, transfer = assert_exactly_once(buyer, order_id, "build")
-    print(f"PASS P7 RESTART: order={order_id} drained by the scheduled job after a Medusa restart "
-          f"({sync['attempts']} failed attempt(s)); exactly one Process/produce/transfer; handover {transfer['id']}", flush=True)
+    print(f"PASS P7 RESTART: order={order_id} recovered after a Medusa restart by the scheduled job"
+          f"{' + the maker signing the remaining writes' if signed else ''} ({sync['attempts']} failed attempt(s)); "
+          f"exactly one Process/produce/transfer; handover {transfer['id']}", flush=True)
 
 
 if __name__ == "__main__":

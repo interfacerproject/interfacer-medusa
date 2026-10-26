@@ -6,6 +6,10 @@
 //   create <alias>                                  -> {id,user,...}
 //   raise <alias> <Design|Service|Product> <name> [qty] -> {resource_id}
 //   sign <alias> <op> <params_json>                 -> base64url header
+//   call <alias> <query> [variables_json]           -> data (a Zenflows call signed by alias)
+//   zsign <alias> <body>                            -> zenflows-sign of an exact body (relay)
+// With Zenflows GQL_AUTH_CALLS=true every call is signed (zenflows-user +
+// zenflows-sign over the body without spaces); createPerson uses ZENFLOWS_ADMIN.
 const fs = require("node:fs")
 const path = require("node:path")
 const crypto = require("node:crypto")
@@ -32,9 +36,22 @@ function save(all) {
   fs.mkdirSync(path.dirname(STORE), { recursive: true })
   fs.writeFileSync(STORE, JSON.stringify(all, null, 2) + "\n", { mode: 0o600 })
 }
-async function gql(query, variables = {}) {
-  const res = await fetch(ZENFLOWS, { method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ query, variables }) })
+// Same serializer as Medusa's zenflowsBody(): one-line query, canonical JSON.
+function body(query, variables) {
+  return JSON.stringify({ query: query.replace(/\s+/g, " ").trim(), variables })
+}
+function signBody(text, a) {
+  if (!/^[\x20-\x5b\x5d-\x7e]*$/.test(text)) throw new Error("non-canonical Zenflows body")
+  return crypto.sign(null, Buffer.from(text.replace(/ /g, ""), "utf8"), a.pkcs8).toString("base64")
+}
+// Zenflows ignores zenflows-user/-sign whenever zenflows-admin is present, so
+// the admin key goes ONLY on admin-only fields (createPerson).
+async function gql(query, variables = {}, as, admin = false) {
+  const text = body(query, variables)
+  const headers = { "content-type": "application/json" }
+  if (admin && process.env.ZENFLOWS_ADMIN) headers["zenflows-admin"] = process.env.ZENFLOWS_ADMIN
+  else if (as) Object.assign(headers, { "zenflows-user": as.user, "zenflows-sign": signBody(text, as) })
+  const res = await fetch(ZENFLOWS, { method: "POST", headers, body: text })
   const json = await res.json()
   if (json.errors?.length || !json.data) throw new Error(JSON.stringify(json.errors ?? json))
   return json.data
@@ -52,7 +69,7 @@ async function create(alias) {
   const email = `${user}@market.invalid`
   const publicKey = base58(Buffer.from(jwk.x, "base64url"))
   const data = await gql(`mutation($p: PersonCreateParams!) { createPerson(person: $p) { agent { id } } }`,
-    { p: { name: `Live ${alias}`, user, email, eddsaPublicKey: publicKey } })
+    { p: { name: `Live ${alias}`, user, email, eddsaPublicKey: publicKey } }, undefined, true)
   const entry = { id: data.createPerson.agent.id, user, email, publicKey,
     seed: base58(Buffer.from(jwk.d, "base64url")), pkcs8: privateKey.export({ type: "pkcs8", format: "pem" }) }
   save({ ...load(), [alias]: entry })
@@ -62,7 +79,7 @@ async function create(alias) {
 async function raise(alias, specName, name, qty = "1") {
   const a = actor(alias)
   const v = (await gql(`{ instanceVariables { specs { specProjectDesign { id } specProjectService { id }
-    specProjectProduct { id } } units { unitOne { id } } } }`)).instanceVariables
+    specProjectProduct { id } } units { unitOne { id } } } }`, {}, a)).instanceVariables
   const spec = { Design: v.specs.specProjectDesign.id, Service: v.specs.specProjectService.id,
     Product: v.specs.specProjectProduct.id }[specName]
   if (!spec) throw new Error("spec must be Design, Service or Product")
@@ -72,7 +89,7 @@ async function raise(alias, specName, name, qty = "1") {
       resourceQuantity: { hasNumericalValue: Number(qty), hasUnit: v.units.unitOne.id },
       hasPointInTime: new Date().toISOString(), note: "live marketplace test resource" },
     r: { name, note: "live marketplace test resource" },
-  })
+  }, a)
   return { resource_id: data.createEconomicEvent.economicEvent.resourceInventoriedAs.id }
 }
 
@@ -84,9 +101,14 @@ function sign(alias, op, params) {
   return Buffer.from(JSON.stringify({ envelope, signature })).toString("base64url")
 }
 
+async function call(alias, query, variables = "{}") {
+  return gql(query, JSON.parse(variables), actor(alias))
+}
+
 const [cmd, ...args] = process.argv.slice(2)
 Promise.resolve()
-  .then(() => (cmd === "create" ? create(...args) : cmd === "raise" ? raise(...args) : cmd === "sign" ? sign(...args) : null))
+  .then(() => (cmd === "create" ? create(...args) : cmd === "raise" ? raise(...args) : cmd === "sign" ? sign(...args)
+    : cmd === "call" ? call(...args) : cmd === "zsign" ? signBody(args[1], actor(args[0])) : null))
   .then(out => {
     if (out === null) throw new Error("usage: create <alias> | raise <alias> <spec> <name> [qty] | sign <alias> <op> <params>")
     process.stdout.write((typeof out === "string" ? out : JSON.stringify(out)) + "\n")

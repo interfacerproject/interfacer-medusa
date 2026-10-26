@@ -2178,6 +2178,38 @@ rejected transfers of live stock. The GUI live journey
 
 The fixture GUI specs skip themselves in live mode.
 
+## P9 — Enforced Zenflows authorization (seller-signed relay)
+
+Plan: [`docs/superpowers/plans/2026-10-26-p3-enforced-authz.md`](docs/superpowers/plans/2026-10-26-p3-enforced-authz.md).
+
+```bash
+npm run test:unit   # 50: signed message rules, Ed25519 round trip, signed transport,
+                    # executor waits for provider signatures, pinned relay queries
+# Zenflows (zenflows-pr84): same env + GQL_AUTH_CALLS=true AUTHZ_ENFORCE=true AUTHZ_ALLOW_UNCHECKED=false
+ZENFLOWS_ADMIN=<admin> node scripts/zenflows-actor.cjs create medusa-service
+INTERFACER_ZENFLOWS_URL=http://127.0.0.1:8100/api INTERFACER_ZENFLOWS_SIGNED_WRITES=true \
+  INTERFACER_ZENFLOWS_SERVICE_USER=<user> INTERFACER_ZENFLOWS_SERVICE_SEED=<seed> npm run dev:up
+ZENFLOWS_ADMIN=<admin> python3 scripts/p8-live-actors-probe.py
+ZENFLOWS_ADMIN=<admin> python3 scripts/p7-outbox-probe.py faults   # + restart-prepare / restart-verify
+# GUI:
+MARKET_TEST_ZENFLOWS_ADMIN=<admin> MARKET_LIVE_E2E=1 TEST_BASE_URL=http://localhost:3002 \
+  playwright test tests/market-sellers.spec.ts --project=chromium
+```
+
+Verified 2026-10-26 against the enforced local Zenflows:
+- Unsigned calls are refused ("zenflows-user and/or zenflows-sign headers are
+  missing"). A buyer-signed transfer of the seller's resource is `forbidden`; the
+  seller-signed one passes.
+- P8 all green, plus `PASS P8 RELAY`: the buyer gets no body; a tampered body, the
+  wrong signer and the wrong step are refused before any send. Stock: 1 relayed
+  signature (transfer). Build: 3 (Process, produce, transfer).
+- P7 faults 8/8 and P7 RESTART: lost responses reconcile inside the relay loop.
+  "Zenflows down" waits out the 60 s window with no resend before the maker signs
+  again. After a Medusa restart the job reconciles and the maker signs the rest.
+  Each case ends with exactly one remote object of each kind.
+- The GUI live journey passes: the seller and maker sign every Zenflows write in
+  the browser through the sales console relay.
+
 ## Inputs and authority
 
 - `docs/fixtures/economic-resource.json`: synthetic resource with name and controller.

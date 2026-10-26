@@ -1,9 +1,10 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import {
-  advanceSync, milestonePayloadHash, newSyncMarker, zenflowsIdLowerBound, ZenflowsRejected,
+  advanceSync, buildWrite, milestonePayloadHash, newSyncMarker, zenflowsIdLowerBound, ZenflowsRejected,
   type MilestonePayload, type SyncState, type SyncStore,
 } from "../modules/interfacer/zenflows-sync"
+import { zenflowsBody } from "../modules/interfacer/zenflows-signing"
 
 // In-memory Zenflows: the subset of createProcess / createEconomicEvent /
 // economicResources(filter:{note}) / processes(after) semantics the outbox relies
@@ -42,7 +43,9 @@ class FakeZenflows {
     return this.events.filter(e => (e.outputOf && e.resourceInventoriedAs === id) ||
       e.toResourceInventoriedAs === id || (["raise", "lower"].includes(e.action) && e.resourceInventoriedAs === id))
   }
-  gql = async (query: string, variables: any): Promise<any> => {
+  signedBy: (Record<string, string> | undefined)[] = []
+  gql = async (query: string, variables: any, signed?: Record<string, string>): Promise<any> => {
+    if (query.includes("mutation")) this.signedBy.push(signed)
     const kind = query.includes("createProcess") ? "createProcess"
       : query.includes("createEconomicEvent") ? variables.e.action
       : query.includes("economicResources") ? "economicResources"
@@ -301,4 +304,29 @@ test("markers are literal for an ILIKE filter and payload hashes are order-indep
   const reordered = Object.fromEntries(Object.entries(p).reverse()) as MilestonePayload
   assert.equal(milestonePayloadHash(reordered), milestonePayloadHash(p))
   assert.notEqual(milestonePayloadHash({ ...p, quantity: 3 }), milestonePayloadHash(p))
+})
+
+test("enforced authz: no write leaves unsigned; each relayed signature sends exactly its own step", async () => {
+  const { zf, store, tag } = harness()
+  const at = (ms: number) => () => new Date(zf.clock + ms)
+  const deps = (signatureFor?: (step: string, body: string) => Record<string, string> | null, ms = 0) =>
+    ({ gql: zf.gql, store, target: TARGET, now: at(ms), signedWrites: true, signatureFor })
+  let state = await advanceSync(store.load("ifzs_one"), deps())
+  assert.equal(state.status, "pending")
+  assert.equal(state.last_error, "awaiting_seller_signature:process")
+  assert.equal(zf.processes.length + zf.events.length, 0)
+  // A signature for a different body is ignored: still nothing sent.
+  state = await advanceSync(store.load("ifzs_one"), deps((step, body) => body.includes("tampered") ? { s: "x" } : null))
+  assert.equal(zf.processes.length, 0)
+  for (const step of ["process", "create", "transfer"] as const) {
+    const write = await buildWrite(store.load("ifzs_one"), step, zf.gql)
+    const body = zenflowsBody(write.query, write.variables)
+    assert.ok(body.includes(tag))
+    state = await advanceSync(store.load("ifzs_one"), deps((st, b) => st === step && b === body
+      ? { "zenflows-user": "seller", "zenflows-sign": "sig-" + step } : null, 1_000))
+    assert.equal(state.last_error, step === "transfer" ? null : "awaiting_seller_signature:" + (step === "process" ? "create" : "transfer"))
+  }
+  assert.equal(state.status, "done")
+  assert.deepEqual(zf.signedBy.map(h => h?.["zenflows-sign"]), ["sig-process", "sig-create", "sig-transfer"])
+  assert.deepEqual([zf.count("process"), zf.count("produce"), zf.count("transfer")], [1, 1, 1])
 })

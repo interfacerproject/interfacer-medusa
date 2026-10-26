@@ -5,6 +5,7 @@
 // Zenflows for the row's marker, never by a blind replay.
 import { randomBytes } from "node:crypto"
 import { termsHash } from "./matching"
+import { zenflowsBody } from "./zenflows-signing"
 
 export type MilestonePayload = {
   target: string // Zenflows GraphQL URL the ids belong to
@@ -46,7 +47,8 @@ export interface SyncStore {
 }
 // Throws ZenflowsRejected when Zenflows definitely did not write (GraphQL errors,
 // HTTP 4xx: its Multi rolled back); any other error is treated as ambiguous.
-export type Gql = (query: string, variables: unknown) => Promise<any>
+// `signed` = a relayed provider signature over this exact body (enforced authz).
+export type Gql = (query: string, variables: unknown, signed?: Record<string, string>) => Promise<any>
 export class ZenflowsRejected extends Error {}
 class SyncBlocked extends Error {}
 
@@ -95,6 +97,10 @@ export type AdvanceDeps = {
   target: string // currently configured Zenflows URL
   now?: () => Date
   settleMs?: number
+  // Enforced authz: a write is sent ONLY with its provider's signature over
+  // that exact body (zenflowsBody). Without one the row waits for the seller.
+  signedWrites?: boolean
+  signatureFor?: (step: SyncStep, body: string) => Record<string, string> | null
 }
 
 // The resource the transfer moves: the seller's own (live stock) or ours.
@@ -154,18 +160,20 @@ export async function advanceSync(state: SyncState, deps: AdvanceDeps): Promise<
       s = { ...s, ...patch }
       return s
     }
-    let spec: string | undefined
-    if (step === "create") {
-      // Read before marking inflight: a failed lookup sends nothing.
-      try {
-        const specs = await deps.gql(SPECS, {})
-        spec = specs.resourceSpecifications.edges.find((e: any) => e.node.name === s.payload.spec_name)?.node.id
-        if (!spec) throw new Error("zenflows_product_spec_required")
-      } catch (e) { await save(backoff(e)); return s }
+    // Build (reads only) before marking inflight: a failed read sends nothing.
+    let write: Write
+    try { write = await buildWrite(s, step, deps.gql) } catch (e) { await save(backoff(e)); return s }
+    let signed: Record<string, string> | undefined
+    if (deps.signedWrites) {
+      signed = deps.signatureFor?.(step, zenflowsBody(write.query, write.variables)) ?? undefined
+      if (!signed) {
+        await save({ last_error: "awaiting_seller_signature:" + step, next_attempt_at: new Date(now().getTime() + 600_000) })
+        return s
+      }
     }
     await save({ inflight_step: step, inflight_at: now() })
     let patch: Partial<SyncState>
-    try { patch = await send(s, step, deps.gql, spec) }
+    try { patch = parseWrite(step, await deps.gql(write.query, write.variables, signed)) }
     catch (e) {
       // Definite rejection: nothing was written, the step may simply be sent again.
       await save({ ...(e instanceof ZenflowsRejected ? { inflight_step: null, inflight_at: null } : {}), ...backoff(e) })
@@ -175,40 +183,51 @@ export async function advanceSync(state: SyncState, deps: AdvanceDeps): Promise<
   }
 }
 
-async function send(s: SyncState, step: SyncStep, gql: Gql, spec?: string): Promise<Partial<SyncState>> {
+export type Write = { query: string; variables: Record<string, unknown> }
+
+// The exact write for a step, deterministic from the row (and the spec id read
+// from Zenflows). The relay recomputes it to check what a seller signed.
+export async function buildWrite(s: SyncState, step: SyncStep, gql: Gql): Promise<Write> {
   const p = s.payload, tag = tagOf(s.marker)
   const quantity = { hasNumericalValue: p.quantity, hasUnit: p.unit }
   const note = `${p.note} ${tag}`
-  if (step === "process") {
-    const data = await gql(CREATE_PROCESS, { p: { name: p.resource_name, note,
-      hasBeginning: p.has_point_in_time, hasEnd: p.has_point_in_time, finished: true } })
-    const id = data?.createProcess?.process?.id
-    if (typeof id !== "string") throw new Error("zenflows_process_missing")
-    return { process_id: id }
-  }
+  if (step === "process") return { query: CREATE_PROCESS, variables: { p: { name: p.resource_name, note,
+    hasBeginning: p.has_point_in_time, hasEnd: p.has_point_in_time, finished: true } } }
   if (step === "create") {
-    const data = await gql(CREATE_RESOURCE, {
+    const specs = await gql(SPECS, {})
+    const spec = specs?.resourceSpecifications?.edges?.find((e: any) => e.node.name === p.spec_name)?.node.id
+    if (!spec) throw new Error("zenflows_product_spec_required")
+    return { query: CREATE_RESOURCE, variables: {
       e: { action: p.action === "produce" ? "produce" : "raise", provider: p.provider, receiver: p.provider,
         resourceConformsTo: spec, resourceQuantity: quantity, hasPointInTime: p.has_point_in_time, note,
         ...(p.action === "produce" ? { outputOf: s.process_id } : {}) },
       r: { name: p.resource_name, note: `interfacer-marketplace ${p.action} ${tag}`,
         trackingIdentifier: p.resource_tracking_id },
-    })
-    const event = data?.createEconomicEvent?.economicEvent
-    if (typeof event?.id !== "string" || typeof event.resourceInventoriedAs?.id !== "string")
-      throw new Error("zenflows_resource_missing")
-    return { resource_id: event.resourceInventoriedAs.id, creation_event_id: event.id }
+    } }
   }
   // Our own resources carry the marker and the destination inherits that note;
   // a seller's real resource keeps its note and the destination is marked.
   const e = { action: "transfer", provider: p.provider, receiver: p.receiver,
     resourceInventoriedAs: sourceOf(s), resourceQuantity: quantity, hasPointInTime: p.has_point_in_time, note }
-  const data = p.source_resource_id
-    ? await gql(TRANSFER_MARKED, { e, r: { note: `interfacer-marketplace transfer ${tag}` } })
-    : await gql(TRANSFER, { e })
-  const id = data?.createEconomicEvent?.economicEvent?.id
-  if (typeof id !== "string") throw new Error("zenflows_transfer_missing")
-  return { transfer_event_id: id }
+  return p.source_resource_id
+    ? { query: TRANSFER_MARKED, variables: { e, r: { note: `interfacer-marketplace transfer ${tag}` } } }
+    : { query: TRANSFER, variables: { e } }
+}
+
+function parseWrite(step: SyncStep, data: any): Partial<SyncState> {
+  if (step === "process") {
+    const id = data?.createProcess?.process?.id
+    if (typeof id !== "string") throw new Error("zenflows_process_missing")
+    return { process_id: id }
+  }
+  const event = data?.createEconomicEvent?.economicEvent
+  if (step === "create") {
+    if (typeof event?.id !== "string" || typeof event.resourceInventoriedAs?.id !== "string")
+      throw new Error("zenflows_resource_missing")
+    return { resource_id: event.resourceInventoriedAs.id, creation_event_id: event.id }
+  }
+  if (typeof event?.id !== "string") throw new Error("zenflows_transfer_missing")
+  return { transfer_event_id: event.id }
 }
 
 function single<T>(candidates: T[]): T | null {

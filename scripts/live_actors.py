@@ -30,12 +30,12 @@ def sign(alias, op, params):
     return actor("sign", alias, op, json.dumps(params))
 
 
-def zf(query, variables=None):
-    req = urllib.request.Request(ZENFLOWS, data=json.dumps({"query": query, "variables": variables or {}}).encode(),
-                                 headers={"content-type": "application/json"})
-    out = json.loads(urllib.request.urlopen(req, timeout=30).read())
-    assert not out.get("errors"), out
-    return out["data"]
+def zf(query, variables=None, as_alias="observer"):
+    """A Zenflows call signed by a real Person (works with GQL_AUTH_CALLS on or off)."""
+    store = ROOT / ".tmp/live-actors.json"
+    if as_alias == "observer" and "observer" not in (json.loads(store.read_text()) if store.exists() else {}):
+        actor("create", "observer")
+    return json.loads(actor("call", as_alias, query, json.dumps(variables or {})))
 
 
 def reason(path, body, signature=None, token=None, key=None, expected=400):
@@ -128,7 +128,38 @@ def stock_order(m, listing):
     return m["buyer"].pay_and_complete(cid)
 
 
+def relay(wallet, sync_id, rounds=10):
+    """Enforced Zenflows authz: act as the seller's browser. Fetch Medusa's exact
+    body for the next write, sign it with the seller's own key, post it back."""
+    sync = None
+    for _ in range(rounds):
+        nxt = wallet.call(f"/dev/store/zenflows-sync/{sync_id}/next")
+        sync = nxt["sync"]
+        if "step" not in nxt:
+            break
+        signature = actor("zsign", wallet.alias, nxt["body"])
+        sync = wallet.call(f"/dev/store/zenflows-sync/{sync_id}/sign",
+                           {"step": nxt["step"], "body": nxt["body"], "signature": signature})["sync"]
+    return sync
+
+
+def awaiting(receipt):
+    sync = (receipt or {}).get("zenflows_sync") or {}
+    return sync.get("status") == "pending" and (sync.get("last_error") or "").startswith("awaiting_seller_signature")
+
+
+def finish(wallet, receipt):
+    """If the outbox waits for the seller's signature, sign every write, then re-read."""
+    if awaiting(receipt):
+        relay(wallet, receipt["zenflows_sync"]["id"])
+        receipt = next(r for r in c.request("/dev/interfacer/receipts")["receipts"] if r["order_id"] == receipt["order_id"])
+    return receipt
+
+
 def milestone(m, kind, order_id, expected=201):
     if kind == "build":
-        return m["maker"].signed(f"/dev/interfacer/build-orders/{order_id}/produce", {}, {"action": "produce", "orderId": order_id}, expected=expected)["receipt"]
-    return m["seller"].signed(f"/dev/interfacer/orders/{order_id}/deliver", {}, {"action": "deliver", "orderId": order_id}, expected=expected)["receipt"]
+        wallet, path, action = m["maker"], f"/dev/interfacer/build-orders/{order_id}/produce", "produce"
+    else:
+        wallet, path, action = m["seller"], f"/dev/interfacer/orders/{order_id}/deliver", "deliver"
+    receipt = wallet.signed(path, {}, {"action": action, "orderId": order_id}, expected=expected)["receipt"]
+    return finish(wallet, receipt)

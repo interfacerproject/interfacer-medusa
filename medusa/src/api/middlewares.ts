@@ -38,6 +38,10 @@ export default defineMiddlewares({ routes: [{
   middlewares: [(req, res, next) => { if (allowStorefront(req, res)) next() },
     authenticate("customer", ["session", "bearer"])],
 }, {
+  matcher: "/dev/store/zenflows-sync/:id/(next|sign)", method: ["GET", "POST"],
+  middlewares: [(req, res, next) => { if (allowStorefront(req, res)) next() },
+    authenticate("customer", ["bearer"])],
+}, {
   matcher: "/dev/store/seller", method: "GET",
   middlewares: [(req, res, next) => { if (allowStorefront(req, res)) next() },
     authenticate("customer", ["bearer"])],

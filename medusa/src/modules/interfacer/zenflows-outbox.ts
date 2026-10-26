@@ -6,9 +6,11 @@ import { MedusaError } from "@medusajs/framework/utils"
 import type InterfacerService from "./service"
 import { zenflowsConfig, zenflowsTransport, type ZenflowsConfig } from "./zenflows-event"
 import {
-  advanceSync, milestonePayloadHash, newSyncMarker,
-  type MilestonePayload, type SyncState, type SyncStore,
+  advanceSync, buildWrite, milestonePayloadHash, newSyncMarker, nextStep,
+  type MilestonePayload, type SyncState, type SyncStep, type SyncStore,
 } from "./zenflows-sync"
+import { verifyZenflowsBody, zenflowsBody } from "./zenflows-signing"
+import { readZenflowsPerson } from "./zenflows-person"
 
 export type MilestoneInput = {
   action: "transfer" | "produce"
@@ -95,7 +97,50 @@ export async function runZenflowsSync(
     const state = toState(await integration.retrieveZenflowsSync(id))
     // Unconfigured now: leave pending rows untouched rather than guessing a registry.
     if (state.status !== "pending" || !cfg) return state
-    return advanceSync(state, { gql: zenflowsTransport(cfg, fetchImpl), store: medusaStore(integration), target: cfg.url })
+    return advanceSync(state, { gql: zenflowsTransport(cfg, fetchImpl), store: medusaStore(integration), target: cfg.url,
+      signedWrites: cfg.signedWrites })
+  })
+}
+
+function relayRefuse(reason: string): never {
+  throw new MedusaError(MedusaError.Types.NOT_ALLOWED, reason)
+}
+
+// Enforced authz, step 1: advance what needs no signature (reconciliation),
+// then hand the provider the EXACT body of the next write to sign.
+export async function nextWrite(integration: InterfacerService, id: string, cfg: ZenflowsConfig | null = zenflowsConfig(),
+  fetchImpl: typeof fetch = fetch) {
+  return integration.withProjectionLock("interfacer-zenflows-sync:" + id, async () => {
+    let state = toState(await integration.retrieveZenflowsSync(id))
+    if (!cfg || state.status !== "pending") return { sync: state }
+    const gql = zenflowsTransport(cfg, fetchImpl)
+    state = await advanceSync(state, { gql, store: medusaStore(integration), target: cfg.url, signedWrites: cfg.signedWrites })
+    const step = nextStep(state)
+    if (!cfg.signedWrites || state.status !== "pending" || state.inflight_step || !step) return { sync: state }
+    const write = await buildWrite(state, step, gql)
+    return { sync: state, step, body: zenflowsBody(write.query, write.variables) }
+  })
+}
+
+// Enforced authz, step 2: the provider's signature over that body. Medusa checks
+// it is the current step's exact body and a valid signature by the provider's
+// REGISTERED key, then relays it once (Zenflows re-verifies and authorizes).
+// The signature is used for this one send and never stored.
+export async function relaySignature(integration: InterfacerService, id: string, step: SyncStep, body: string,
+  signature: string, cfg: ZenflowsConfig | null = zenflowsConfig(), fetchImpl: typeof fetch = fetch) {
+  return integration.withProjectionLock("interfacer-zenflows-sync:" + id, async () => {
+    const state = toState(await integration.retrieveZenflowsSync(id))
+    if (state.status !== "pending") return { sync: state }
+    if (!cfg?.signedWrites) relayRefuse("relay_not_enabled")
+    if (state.inflight_step || nextStep(state) !== step) relayRefuse("relay_step_mismatch")
+    const gql = zenflowsTransport(cfg, fetchImpl)
+    const write = await buildWrite(state, step, gql)
+    if (zenflowsBody(write.query, write.variables) !== body) relayRefuse("relay_body_mismatch")
+    const provider = await readZenflowsPerson(state.payload.provider, cfg, fetchImpl)
+    if (!verifyZenflowsBody(body, signature, provider.publicKey)) relayRefuse("relay_signature_invalid")
+    return { sync: await advanceSync(state, { gql, store: medusaStore(integration), target: cfg.url, signedWrites: true,
+      signatureFor: (st, b) => st === step && b === body
+        ? { "zenflows-user": provider.user, "zenflows-sign": signature } : null }) }
   })
 }
 

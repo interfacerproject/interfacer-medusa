@@ -17,7 +17,7 @@ function proof(params: unknown, person_id = person, key = pair.privateKey) {
 function registry(node: unknown, status = 200) {
   return (async () => new Response(JSON.stringify({ data: { person: node } }), { status })) as typeof fetch
 }
-const node = { id: person, name: "Buyer One", eddsaPublicKey: Buffer.from(publicKey, "base64url").toString("base64") }
+const node = { id: person, name: "Buyer One", user: "buyerone", eddsaPublicKey: Buffer.from(publicKey, "base64url").toString("base64") }
 
 test("registered Zenflows key verifies the bound operation without a request-supplied key", async () => {
   const params = { challenge: "challenge-one" }

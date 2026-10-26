@@ -1,7 +1,8 @@
 # Local Zenflows marketplace bridge
 
 Updated 2026-10-26: P7 durable outbox, P8 real actors (no demo keys in live
-mode). Earlier: 2026-10-23, Claude session
+mode), P9 enforced Zenflows authorization (seller-signed relay). Earlier:
+2026-10-23, Claude session
 `cbf47518` / commit `e65e053`, pi session `01a16863`.
 Work remains on `feat/zenflows-real-events`; no production/main changes.
 Review snapshot: [bilingual field guide](review/README.md), backend PR #1 and GUI
@@ -152,10 +153,50 @@ HTTP/GraphQL failures abort the remaining write sequence.
 - GUI `interfacer-gui-medusa`, `http://localhost:3002`.
 - Medusa v2.10.3, `http://localhost:9000`.
 - Local signup requires a valid **base64 `ROOM_SALT`** in Zenflows.
-- This demo currently runs with **`GQL_AUTH_CALLS=false`, `AUTHZ_ENFORCE=false`**
-  (and the local unchecked flag). Those are local test settings, not deployment
-  advice. Enforced Zenflows writes still need the reviewed authorization/delegation
-  transport; an admin environment variable alone does not implement that policy.
+- Verified with Zenflows both unenforced and **enforced**
+  (`GQL_AUTH_CALLS=true AUTHZ_ENFORCE=true AUTHZ_ALLOW_UNCHECKED=false`, same DB,
+  `ROOM_SALT` and `ADMIN_KEY`). See "Enforced Zenflows authorization (P9)".
+
+## Enforced Zenflows authorization (P9)
+
+With enforcement on, Zenflows authenticates every call (`zenflows-user` +
+`zenflows-sign` over the body) and authorizes each write against the signer. An
+event needs a signer acting for its provider or receiver who controls the
+Process and resources it touches. Medusa never holds a credential that can write
+in a seller's name.
+
+- **Reads:** registry keys, resources, instance, specs and reconciliation are
+  signed by a dedicated read-only Medusa Person
+  (`INTERFACER_ZENFLOWS_SERVICE_USER` + `INTERFACER_ZENFLOWS_SERVICE_SEED`,
+  base58 keypairoom seed; local, kept in `.tmp`). A signed call never carries
+  `zenflows-admin`: Zenflows ignores the signature whenever that header is
+  present.
+- **Writes** (`INTERFACER_ZENFLOWS_SIGNED_WRITES=true`): the outbox never sends an
+  unsigned write. It stops at each step with
+  `last_error = awaiting_seller_signature:<step>`. Then:
+  1. The provider's browser calls `GET /dev/store/zenflows-sync/:id/next`. Only
+     the Person who is the row's provider gets an answer (bearer): Medusa's
+     exact body for the next write.
+  2. The GUI checks the body (`lib/market/relay.ts`): one of the three
+     marketplace mutation shapes, provider = me, a handover's receiver = the
+     order's buyer.
+  3. It signs with the SDK's `signGraphQLRequest` and posts
+     `{step, body, signature}` to `POST .../sign`.
+  4. Medusa recomputes the body and requires equality (`relay_body_mismatch`).
+     It verifies the signature against the provider's **registered** key
+     (`relay_signature_invalid`) and relays it once with the provider's registry
+     username. Zenflows re-verifies and authorizes; the signature is not stored.
+- Signed message: Zencode's `verify_graphql` removes spaces and "compacts ascii
+  strings" (raw whitespace, escape sequences, non-ASCII). Medusa serializes every
+  body with one function (`zenflowsBody`: one-line query, canonical JSON) and only
+  signs or relays printable-ASCII bodies without `\`. For those the message is
+  exactly the body without spaces, which was checked against the live zvmlet.
+- **Recovery:** the scheduled job and retries still reconcile; writes wait for the
+  seller. The GUI sales console signs the remaining steps right after a
+  milestone, or on Retry.
+- Live negative check: a transfer of the seller's resource signed by the buyer is
+  refused by Zenflows itself (`forbidden`); the same body signed by the seller
+  passes.
 
 ## Verified buyer protocol
 

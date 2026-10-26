@@ -3,29 +3,28 @@ import { MedusaError } from "@medusajs/framework/utils"
 import { decodeBase58 } from "./base58"
 import { resolveLocalPersonPublicKey } from "./local-person-key-resolver"
 import { signatureDenied, verifySignedOperation } from "./signed-envelope"
+import { zenflowsConfig, zenflowsTransport, type ZenflowsConfig } from "./zenflows-event"
 
-type RegistryConfig = { url: string; admin?: string }
-export type RegisteredPerson = { id: string; name: string; publicKey: KeyObject }
+export type RegisteredPerson = { id: string; name: string; user: string; publicKey: KeyObject }
 
-function registryConfig(): RegistryConfig {
-  const url = process.env.INTERFACER_ZENFLOWS_URL
-  if (!url) throw new Error("zenflows_registry_not_configured")
-  return { url, admin: process.env.INTERFACER_ZENFLOWS_ADMIN }
+function registryConfig(): ZenflowsConfig {
+  const cfg = zenflowsConfig()
+  if (!cfg) throw new Error("zenflows_registry_not_configured")
+  return cfg
 }
 
+// Through the shared transport: signed by Medusa's service Person when Zenflows
+// authenticates calls. Any outage, error or mismatch throws (callers deny).
 export async function readZenflowsPerson(
-  id: string, cfg: RegistryConfig = registryConfig(), fetchImpl: typeof fetch = fetch,
+  id: string, cfg: ZenflowsConfig = registryConfig(), fetchImpl: typeof fetch = fetch,
 ): Promise<RegisteredPerson> {
   if (!/^[0-9A-HJKMNP-TV-Z]{26}$/.test(id)) throw new Error("invalid_zenflows_person")
-  const res = await fetchImpl(cfg.url, {
-    method: "POST", signal: AbortSignal.timeout(10_000),
-    headers: { "content-type": "application/json", ...(cfg.admin ? { "zenflows-admin": cfg.admin } : {}) },
-    body: JSON.stringify({ query: "query($id: ID!) { person(id: $id) { id name eddsaPublicKey } }", variables: { id } }),
-  })
-  if (!res.ok) throw new Error("zenflows_registry_unavailable")
-  const json = await res.json() as any
-  const person = json.data?.person
-  if (json.errors?.length || person?.id !== id || typeof person.eddsaPublicKey !== "string")
+  let person: any
+  try {
+    person = (await zenflowsTransport(cfg, fetchImpl)(
+      "query($id: ID!) { person(id: $id) { id name user eddsaPublicKey } }", { id }))?.person
+  } catch { throw new Error("zenflows_registry_unavailable") }
+  if (person?.id !== id || typeof person.eddsaPublicKey !== "string" || typeof person.user !== "string")
     throw new Error("zenflows_registered_key_required")
   // Keypairoom publishes base58, not base64. Accept canonical padded base64 as
   // well for registries which explicitly use that encoding; never guess raw PEM.
@@ -37,14 +36,14 @@ export async function readZenflowsPerson(
   const publicKey = createPublicKey({
     key: Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), raw]), format: "der", type: "spki",
   })
-  return { id, name: person.name, publicKey }
+  return { id, name: person.name, user: person.user, publicKey }
 }
 
 // Remote identities NEVER fall back to caller-supplied or fixture keys on a
 // registry failure. Session creation always takes this path.
 export async function verifyZenflowsOperation(
   auth: unknown, op: string, params: unknown, person: string,
-  cfg?: RegistryConfig, fetchImpl: typeof fetch = fetch,
+  cfg?: ZenflowsConfig, fetchImpl: typeof fetch = fetch,
 ): Promise<string> {
   try {
     const registered = await readZenflowsPerson(person, cfg, fetchImpl)
