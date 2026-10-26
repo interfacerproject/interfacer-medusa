@@ -1,25 +1,23 @@
 // Live local Zenflows configuration and GraphQL transport for the milestone
 // outbox (zenflows-sync.ts owns the write sequence: stock raise -> transfer;
-// build Process -> produce -> transfer). Seller/unit still use the explicit demo
-// mapping; real buyers are per-order. Unconfigured = local receipt only.
+// build Process -> produce -> transfer). Live sellers, units and buyers come
+// per order from bindings/quotes/identity links; the env provider/unit/receiver
+// are only fallbacks for fixture data. Unconfigured = local receipt only.
 import { ZenflowsRejected, type Gql } from "./zenflows-sync"
 
 export type ZenflowsConfig = {
   url: string
-  provider: string
+  provider?: string // fixture seller fallback only; live bindings/quotes supply per-order
   receiver?: string // legacy fixture buyer only; real sessions supply per-order
-  unit: string
+  unit?: string // fixture fallback; live listings carry the resource unit
   admin?: string
 }
 
 export function zenflowsConfig(): ZenflowsConfig | null {
   const url = process.env.INTERFACER_ZENFLOWS_URL
   if (!url) return null
-  const provider = process.env.INTERFACER_ZENFLOWS_PROVIDER
-  const unit = process.env.INTERFACER_ZENFLOWS_UNIT
-  if (!provider || !unit) throw new Error("zenflows_provider_and_unit_required")
-  return { url, provider, unit, receiver: process.env.INTERFACER_ZENFLOWS_RECEIVER,
-    admin: process.env.INTERFACER_ZENFLOWS_ADMIN }
+  return { url, provider: process.env.INTERFACER_ZENFLOWS_PROVIDER, unit: process.env.INTERFACER_ZENFLOWS_UNIT,
+    receiver: process.env.INTERFACER_ZENFLOWS_RECEIVER, admin: process.env.INTERFACER_ZENFLOWS_ADMIN }
 }
 
 // Classifies failures for the outbox: GraphQL errors and HTTP 4xx mean Zenflows

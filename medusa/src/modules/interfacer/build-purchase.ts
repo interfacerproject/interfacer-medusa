@@ -82,6 +82,7 @@ export async function acceptBuild(container: MedusaContainer, cartId: string, qu
     if (cart.completed_at) buildRefuse("build_cart_already_completed")
     if (!previous && cart.items?.length) buildRefuse("build_empty_cart_required")
     const { offer, quote, context } = await offerFor(container, quoteId)
+    if (quote.provider_person_id === identity.person_id) buildRefuse("self_purchase_forbidden")
     if (cart.currency_code !== "eur" || cart.region_id !== context.region_id ||
         cart.sales_channel_id !== context.sales_channel_id) buildRefuse("build_commerce_context_required")
     const query = container.resolve(ContainerRegistrationKeys.QUERY)

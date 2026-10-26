@@ -1,5 +1,6 @@
 // Guarded local merchant seed: exactly one unit, local collection (no carrier).
-import { verifySignedOperation } from "./signed-envelope"
+// Live mode: Zenflows-registered keys only; standalone: fixture keyring.
+import { verifyCommerceOperation } from "./zenflows-person"
 import type { MedusaContainer, IInventoryService } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, MedusaError, Modules } from "@medusajs/framework/utils"
 import { createInventoryItemsWorkflow, createInventoryLevelsWorkflow, updateProductVariantsWorkflow,
@@ -13,7 +14,7 @@ export async function setupCheckout(container: MedusaContainer, listingId: strin
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   const [binding] = await integration.listListingBindings({ id: listingId })
   if (!binding) throw new MedusaError(MedusaError.Types.NOT_FOUND, "listing_not_found")
-  verifySignedOperation(auth, "commerce.listing.checkout.setup", { listing_id: listingId }, binding.seller_agent_id)
+  await verifyCommerceOperation(auth, "commerce.listing.checkout.setup", { listing_id: listingId }, binding.seller_agent_id)
   const context = await seedCommerce(container)
   return integration.withProjectionLock("interfacer-checkout-setup-v1", async () => {
     const inventory = container.resolve<IInventoryService>(Modules.INVENTORY)

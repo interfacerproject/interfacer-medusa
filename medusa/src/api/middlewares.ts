@@ -38,6 +38,10 @@ export default defineMiddlewares({ routes: [{
   middlewares: [(req, res, next) => { if (allowStorefront(req, res)) next() },
     authenticate("customer", ["session", "bearer"])],
 }, {
+  matcher: "/dev/store/seller", method: "GET",
+  middlewares: [(req, res, next) => { if (allowStorefront(req, res)) next() },
+    authenticate("customer", ["bearer"])],
+}, {
   matcher: "/dev/interfacer/build-orders", method: "POST",
   middlewares: [(req, res, next) => { if (allowLocalRequest(req, res)) next() },
     authenticate("customer", ["session", "bearer"])],

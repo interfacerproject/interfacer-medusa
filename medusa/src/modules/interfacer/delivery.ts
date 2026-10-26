@@ -1,8 +1,10 @@
-import { verifySignedOperation } from "./signed-envelope"
+// Live mode: Zenflows-registered keys only; standalone: fixture keyring.
+import { verifyCommerceOperation } from "./zenflows-person"
 import type { IFulfillmentModuleService, MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, MedusaError, Modules } from "@medusajs/framework/utils"
 import { createOrderFulfillmentWorkflow, markOrderFulfillmentAsDeliveredWorkflow } from "@medusajs/medusa/core-flows"
 import { requireLocalCommerce, seedCommerce } from "./commerce-context"
+import { LIVE_POLICY } from "./live-listing"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
 import { enqueueMilestone, resumeMilestone, runZenflowsSyncSafely, withSync, type MilestoneInput } from "./zenflows-outbox"
@@ -82,7 +84,7 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
   return integration.withProjectionLock("interfacer-delivery-v1:" + orderId, async () => {
     let order = await readOrder(container, orderId)
     const { line, binding, identity } = await receiptFacts(container, order)
-    verifySignedOperation(auth, "commerce.order.deliver", { order_id: orderId }, binding.seller_agent_id)
+    await verifyCommerceOperation(auth, "commerce.order.deliver", { order_id: orderId }, binding.seller_agent_id)
     if (line.requires_shipping) refuse("interfacer_local_collection_only")
     let active = (order.fulfillments ?? []).filter(f => !f.canceled_at)
     if (active.length > 1) refuse("interfacer_fulfillment_reconciliation_required")
@@ -114,13 +116,18 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
     }
     const [previous] = await integration.listReaReceipts({ order_id: orderId })
     const has_point_in_time = new Date(delivered.delivered_at!)
+    // Live listing: one unit of the seller's REAL Zenflows resource moves to the
+    // buyer (no stand-in raise). Fixture listing: a per-listing stand-in.
+    const live = binding.policy_version === LIVE_POLICY
+    if (live && identity.zenflows_person_id === binding.seller_agent_id) refuse("self_purchase_forbidden")
     const milestone: MilestoneInput = {
       action: "transfer", quantity: Number(line.quantity), has_point_in_time,
       note: `interfacer-marketplace transfer order=${orderId}`,
-      // A real per-listing Zenflows resource, tracked to the catalog resource.
       resource_name: `Interfacer listing ${binding.catalog_resource_id}`,
       resource_tracking_id: binding.catalog_resource_id,
       receiver: identity.zenflows_person_id ?? undefined,
+      ...(live ? { provider: binding.seller_agent_id, unit: binding.zenflows_unit_id ?? undefined,
+        source_resource_id: binding.catalog_resource_id } : {}),
     }
     if (previous) return { created: false, ...await resumeMilestone(integration, previous, milestone) }
     // Durable outbox: receipt + pending Zenflows sync commit first, then the

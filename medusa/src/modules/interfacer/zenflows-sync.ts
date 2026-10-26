@@ -18,6 +18,9 @@ export type MilestonePayload = {
   resource_name: string
   resource_tracking_id: string
   note: string
+  // Live stock: transfer one unit of this existing seller resource (no create
+  // step); the transfer destination carries the marker instead.
+  source_resource_id?: string
 }
 export type SyncStep = "process" | "create" | "transfer"
 export type SyncState = {
@@ -77,6 +80,8 @@ const CREATE_RESOURCE = `mutation($e: EconomicEventCreateParams!, $r: EconomicRe
   createEconomicEvent(event: $e, newInventoriedResource: $r) { economicEvent { id resourceInventoriedAs { id } } }
 }`
 const TRANSFER = `mutation($e: EconomicEventCreateParams!) { createEconomicEvent(event: $e) { economicEvent { id } } }`
+const TRANSFER_MARKED = `mutation($e: EconomicEventCreateParams!, $r: EconomicResourceCreateParams!) {
+  createEconomicEvent(event: $e, newInventoriedResource: $r) { economicEvent { id } } }`
 const BY_MARKER = `query($m: String!) { economicResources(first: 20, filter: { note: $m }) { edges { node {
   id note previous { id note action { id } provider { id } receiver { id } outputOf { id }
     resourceInventoriedAs { id } toResourceInventoriedAs { id } resourceQuantity { hasNumericalValue } }
@@ -92,9 +97,13 @@ export type AdvanceDeps = {
   settleMs?: number
 }
 
+// The resource the transfer moves: the seller's own (live stock) or ours.
+function sourceOf(s: SyncState): string | null {
+  return s.payload.source_resource_id ?? s.resource_id
+}
 export function nextStep(s: SyncState): SyncStep | null {
   if (s.payload.action === "produce" && !s.process_id) return "process"
-  if (!s.resource_id) return "create"
+  if (!sourceOf(s)) return "create"
   if (!s.transfer_event_id) return "transfer"
   return null
 }
@@ -190,9 +199,13 @@ async function send(s: SyncState, step: SyncStep, gql: Gql, spec?: string): Prom
       throw new Error("zenflows_resource_missing")
     return { resource_id: event.resourceInventoriedAs.id, creation_event_id: event.id }
   }
-  // The destination inherits the source note (and so the marker) in Zenflows.
-  const data = await gql(TRANSFER, { e: { action: "transfer", provider: p.provider, receiver: p.receiver,
-    resourceInventoriedAs: s.resource_id, resourceQuantity: quantity, hasPointInTime: p.has_point_in_time, note } })
+  // Our own resources carry the marker and the destination inherits that note;
+  // a seller's real resource keeps its note and the destination is marked.
+  const e = { action: "transfer", provider: p.provider, receiver: p.receiver,
+    resourceInventoriedAs: sourceOf(s), resourceQuantity: quantity, hasPointInTime: p.has_point_in_time, note }
+  const data = p.source_resource_id
+    ? await gql(TRANSFER_MARKED, { e, r: { note: `interfacer-marketplace transfer ${tag}` } })
+    : await gql(TRANSFER, { e })
   const id = data?.createEconomicEvent?.economicEvent?.id
   if (typeof id !== "string") throw new Error("zenflows_transfer_missing")
   return { transfer_event_id: id }
@@ -237,7 +250,7 @@ async function reconcile(s: SyncState, gql: Gql): Promise<Partial<SyncState> | n
     return { resource_id: hit.resource.id, creation_event_id: hit.event.id }
   }
   const hit = single(events.filter(({ resource, event }) => event.action?.id === "transfer" &&
-    event.toResourceInventoriedAs?.id === resource.id && event.resourceInventoriedAs?.id === s.resource_id))
+    event.toResourceInventoriedAs?.id === resource.id && event.resourceInventoriedAs?.id === sourceOf(s)))
   if (!hit) return null
   same(hit.event.provider?.id === p.provider && hit.event.receiver?.id === p.receiver && qty(hit.event) === p.quantity)
   return { transfer_event_id: hit.event.id }

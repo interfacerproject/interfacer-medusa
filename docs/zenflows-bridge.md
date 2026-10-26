@@ -1,6 +1,7 @@
 # Local Zenflows marketplace bridge
 
-Updated 2026-10-26 (P7 durable outbox). Earlier: 2026-10-23, Claude session
+Updated 2026-10-26: P7 durable outbox, P8 real actors (no demo keys in live
+mode). Earlier: 2026-10-23, Claude session
 `cbf47518` / commit `e65e053`, pi session `01a16863`.
 Work remains on `feat/zenflows-real-events`; no production/main changes.
 Review snapshot: [bilingual field guide](review/README.md), backend PR #1 and GUI
@@ -9,11 +10,47 @@ is historical, not the maintained copy.
 
 ## What runs now
 
-- **Stock:** seller-signed delivery → `raise` a per-listing EconomicResource →
-  `transfer` to the order's buyer.
-- **Build:** supplier-signed milestone → a finished ValueFlows **Process** →
-  `produce` its output (provider = receiver = supplier, `outputOf` = Process) →
-  `transfer` the output to the buyer. Quantity is the quoted lot quantity.
+Live mode = Medusa started with `INTERFACER_ZENFLOWS_URL`. In live mode every
+actor is a real Zenflows Person who signs with the key Zenflows has registered
+for them (their Interfacer wallet in the GUI). Fixture keys are refused with
+`fixture_identity_forbidden`, `/dev/store/sign` with `dev_signer_disabled_live`,
+and `/dev/store/config` discloses no demo login.
+
+- **Catalog (P8):** a Design's structured requirements
+  (`interfacer-build-requirements-v1`) and a Service's capabilities + fixed EUR
+  prices + location (`interfacer-fabrication-capabilities-v1`) are registered by
+  the Person accountable for that Zenflows resource. They sign
+  `catalog.{design,service}.register` with `{resource_id, document}`.
+  - Medusa re-reads the resource and requires the right Interfacer spec and
+    `primaryAccountable = signer`.
+  - It parses the document strictly (unknown keys refused) and stores an
+    immutable revision.
+  - Matching uses only registered entries, revalidated against Zenflows at match
+    time. A vanished resource, a changed spec, or a resource whose owner no longer
+    holds it is excluded with a reason and never quoted. Manufacturability is
+    never inferred from tags.
+  - The DPP reference is derived (`zenflows:traceDpp:<resource id>`), never
+    asserted by the owner or copied.
+- **Stock:**
+  - The seller lists their own Product resource (`commerce.listing.live.create`
+    `{resource_id}`; accountable = custodian = signer, onhand ≥ 1), then publishes
+    and allocates it with their wallet.
+  - Delivery is signed by that seller. It **transfers one unit of the seller's real
+    resource** to the buyer; the destination carries the outbox marker. There is
+    no stand-in raise.
+  - Self-purchase is refused.
+- **Build:**
+  - The registered service owner is the quote provider and signs production.
+  - A finished ValueFlows **Process** produces the output (provider = receiver =
+    maker, `outputOf` = Process).
+  - The output is then transferred to the buyer, in the quoted lot quantity.
+- **Seller console:** `GET /dev/store/seller` (GUI `/market/sales`) returns only
+  the authenticated Person's listings, registrations and sold orders with
+  receipts and sync state.
+  - `/dev/store/prepare` returns a deliver/produce operation only to that
+    order's seller/provider. Every other person gets `seller_order_required`.
+- **Standalone** (no URL): the original fixture catalog, disposable buyer and dev
+  signer, with local receipts only. The 9-suite harness runs here.
 - **Durable outbox (P7):** the immutable receipt and an `interfacer_zenflows_sync`
   row commit in **one transaction before any remote write**. The sync then runs
   inline, from the per-minute `interfacer-zenflows-sync` job or from
@@ -27,13 +64,11 @@ is historical, not the maintained copy.
   trigger). The receipt action `produce` describes the local production milestone;
   its event id is the subsequent transfer. The Process and produce ids are on the
   sync row (`process_id`, `creation_event_id`).
-- A logged-in GUI buyer uses their **existing Interfacer browser wallet**, not
-  the disclosed fixture customer. The immutable identity link supplies the live
-  event receiver. Anonymous local demos retain the original fixture workflow.
+- A logged-in GUI buyer uses their **existing Interfacer browser wallet**. The
+  immutable identity link supplies the live event receiver.
 
-Catalog/design/service inputs, merchant assertions and payments are still demo
-fixtures. The live seller and unit are an explicit environment mapping. This is
-not a production identity provider, remote PDP integration or supplier registry.
+Payments are still manual test payments. This is not a production identity
+provider or remote PDP integration.
 
 ## Enable live events
 
@@ -41,14 +76,14 @@ Before `npm run dev:up`:
 
 ```bash
 export INTERFACER_ZENFLOWS_URL=http://localhost:8000/api
-export INTERFACER_ZENFLOWS_PROVIDER=<seller-agent-ULID>
-export INTERFACER_ZENFLOWS_UNIT=<unit-ULID>
-# Only for the anonymous fixture demo; verified buyers override this per order:
-export INTERFACER_ZENFLOWS_RECEIVER=<demo-buyer-Person-ULID>
 # Optional, if required by the local registry:
 # export INTERFACER_ZENFLOWS_ADMIN=<server-only-admin-value>
-npm run dev:up
+npm run dev:up        # live: no fixture bootstrap; sellers list from the GUI
 ```
+
+Sellers, buyers and units come per order from listings, quotes and identity
+links. The produced lot uses the instance's `unitOne`. `INTERFACER_ZENFLOWS_PROVIDER`,
+`_UNIT` and `_RECEIVER` are optional fallbacks only for pre-P8 fixture data.
 
 `INTERFACER_ZENFLOWS_RESOURCE` is obsolete: each milestone creates its own
 resource. No fixed receiver is needed for verified buyer sessions. An unset URL
@@ -60,8 +95,11 @@ stays LOCAL ONLY, as before.
 
 ## Durable milestone outbox (P7)
 
-Steps: build `process → create (produce, outputOf) → transfer`; stock
-`create (raise) → transfer`.
+Steps:
+- build: `process → create (produce, outputOf) → transfer`;
+- live stock: `transfer` of one unit of the seller's own resource, with the
+  destination marked via `newInventoriedResource.note`;
+- pre-P8 fixture stock: `create (raise) → transfer`.
 
 | Failure | What the row does |
 | --- | --- |
@@ -90,7 +128,9 @@ events.
 Live fault test tool: `scripts/zenflows-fault-proxy.cjs`, a loopback proxy in
 front of Zenflows with modes `lose-response | late | down | reject`. Run
 `dev:up` with `INTERFACER_ZENFLOWS_URL=http://127.0.0.1:8100/api`, then
-`python3 scripts/p7-outbox-probe.py faults|restart-prepare|restart-verify`.
+`python3 scripts/p7-outbox-probe.py faults|restart-prepare|restart-verify`. The
+probe uses real disposable Zenflows People (`scripts/zenflows-actor.cjs`,
+`scripts/live_actors.py`) and no fixture keys.
 
 Zenflows ids are **ULIDs**, not database UUIDs. Inspect via GraphQL:
 
@@ -191,10 +231,12 @@ retaining older orders/resources/receipts.
 
 ## Explicit limits
 
-The match catalog is still seeded; seller identities still use the configured
-single demo provider rather than a per-supplier registry. DPP ids remain references;
-no successor passport or actual material/machine evidence is minted. A finished
-Process records the signed demo assertion, not physical proof or measured duration.
+Catalog owners and sellers must be Persons. Resources owned by an Organisation
+are refused with `catalog_owner_required` until org-admin acting is wired in.
+Catalog documents are owner assertions about capability and price, validated for
+shape, not verified physically. DPP references point at Zenflows' `traceDpp`; no
+successor passport or material/machine evidence is minted. A finished Process
+records the maker's signed assertion, not physical proof or measured duration.
 
 The P7 outbox gives at-most-once remote objects plus eventual completion under
 lost responses, failed steps, local failures and restarts. It relies on these

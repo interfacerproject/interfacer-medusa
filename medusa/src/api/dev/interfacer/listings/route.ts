@@ -46,6 +46,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       authorization_denied: 403,
       idempotency_conflict: 409,
       reconciliation_required: 409,
+      fixture_identity_forbidden: 403,
     }
     if (!Object.prototype.hasOwnProperty.call(statuses, code)) throw error
     res.status(statuses[code]).json({ reason })

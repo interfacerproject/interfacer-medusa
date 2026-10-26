@@ -87,7 +87,7 @@ class FakeZenflows {
       case "transfer": {
         const src = this.resources.find(r => r.id === v.e.resourceInventoriedAs)
         if (!src || src.primaryAccountable !== v.e.provider) throw new ZenflowsRejected("zenflows_error: accountability")
-        const dest = { id: this.id(), name: src.name, note: src.note, primaryAccountable: v.e.receiver }
+        const dest = { id: this.id(), name: v.r?.name ?? src.name, note: v.r?.note ?? src.note, primaryAccountable: v.e.receiver }
         this.resources.push(dest)
         const e = { id: this.id(), action: "transfer", provider: v.e.provider, receiver: v.e.receiver, note: v.e.note,
           resourceInventoriedAs: src.id, toResourceInventoriedAs: dest.id, quantity: v.e.resourceQuantity.hasNumericalValue }
@@ -225,6 +225,26 @@ test("local database fails right after a remote commit; a restarted executor rec
   assert.equal(done.status, "done")
   assert.deepEqual([zf.count("process"), zf.count("produce"), zf.count("transfer")], [1, 1, 1])
   assert.equal(done.transfer_event_id, zf.events.find(e => e.action === "transfer").id)
+})
+
+test("live stock: one unit of the seller's REAL resource is transferred, nothing raised; the destination carries the marker", async () => {
+  const p = { ...payload("transfer"), source_resource_id: "06GSOURCE00000000000000000A" }
+  for (const lose of [false, true]) {
+    const { zf, run, tag } = harness(fresh(p))
+    zf.resources.push({ id: p.source_resource_id, name: "Seller's real lamp", note: "the seller's own note",
+      primaryAccountable: p.provider })
+    if (lose) zf.fault("transfer", "lose")
+    let state = await run()
+    if (lose) state = await run(1_000)
+    assert.equal(state.status, "done")
+    assert.deepEqual([zf.count("raise"), zf.count("transfer"), zf.count("process")], [0, 1, 0])
+    const transfer = zf.events.find(e => e.action === "transfer")
+    assert.equal(transfer.resourceInventoriedAs, p.source_resource_id)
+    assert.equal(state.transfer_event_id, transfer.id)
+    const dest = zf.resources.find(r => r.id === transfer.toResourceInventoriedAs)
+    assert.ok(dest.note.includes(tag) && dest.primaryAccountable === p.receiver)
+    assert.equal(zf.resources.find(r => r.id === p.source_resource_id).note, "the seller's own note")
+  }
 })
 
 test("tampered payload or changed target blocks with zero remote calls", async () => {

@@ -19,6 +19,10 @@ export type MilestoneInput = {
   resource_tracking_id: string
   receiver?: string
   provider?: string
+  unit?: string
+  // Live stock: transfer one unit of the seller's own Zenflows resource instead
+  // of raising a stand-in; the destination is marked instead of the source.
+  source_resource_id?: string
 }
 
 // Deterministic from immutable receipt facts + the configured registry mapping:
@@ -26,11 +30,15 @@ export type MilestoneInput = {
 export function syncPayloadFor(input: MilestoneInput, cfg: ZenflowsConfig): MilestonePayload {
   const provider = input.provider ?? cfg.provider
   const receiver = input.receiver ?? cfg.receiver
+  const unit = input.unit ?? cfg.unit
   if (!provider || !receiver) throw new Error("zenflows_agents_required")
+  if (!unit) throw new Error("zenflows_unit_required")
+  if (provider === receiver) throw new Error("zenflows_self_transfer_forbidden")
   if (!Number.isFinite(input.quantity) || input.quantity <= 0) throw new Error("zenflows_positive_quantity_required")
-  return { target: cfg.url, action: input.action, provider, receiver, unit: cfg.unit, spec_name: "Product",
+  return { target: cfg.url, action: input.action, provider, receiver, unit, spec_name: "Product",
     quantity: input.quantity, has_point_in_time: input.has_point_in_time.toISOString(),
-    resource_name: input.resource_name, resource_tracking_id: input.resource_tracking_id, note: input.note }
+    resource_name: input.resource_name, resource_tracking_id: input.resource_tracking_id, note: input.note,
+    ...(input.source_resource_id ? { source_resource_id: input.source_resource_id } : {}) }
 }
 
 export function assertSameSyncPayload(existing: { payload_hash: string }, candidate: MilestonePayload) {
@@ -107,7 +115,9 @@ export async function resumeMilestone(integration: InterfacerService, receipt: {
   if (!sync) return { receipt } // standalone, or a legacy pre-outbox local-only receipt
   if (cfg) {
     let candidate: MilestonePayload
-    try { candidate = syncPayloadFor(input, cfg) }
+    // A retry need not re-read the instance unit (Zenflows may be down): the
+    // stored unit is the one this milestone was enqueued with.
+    try { candidate = syncPayloadFor({ ...input, unit: input.unit ?? (sync.payload as MilestonePayload).unit }, cfg) }
     catch { throw new MedusaError(MedusaError.Types.CONFLICT, "zenflows_sync_payload_conflict") }
     assertSameSyncPayload(sync, candidate)
   }

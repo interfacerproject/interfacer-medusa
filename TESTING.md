@@ -2131,6 +2131,53 @@ Process, one produce, one transfer, the same transfer id. GUI journeys:
 `MARKET_LIVE_E2E=1 MARKET_E2E=1 playwright test tests/market-identity.spec.ts tests/market.spec.ts`
 gives 4/4. The historical standalone harness `npm run test:all` gives 9/9.
 
+## P8 — Real actors in live mode (registered catalog, real listings, seller-signed milestones)
+
+Design: [`docs/superpowers/specs/2026-10-26-marketplace-hardening-design.md`](docs/superpowers/specs/2026-10-26-marketplace-hardening-design.md) (G2 + G3),
+plan [`docs/superpowers/plans/2026-10-26-p2-real-actors.md`](docs/superpowers/plans/2026-10-26-p2-real-actors.md).
+
+```bash
+npm run test:unit                       # 44: registry adapter, actor policy, catalog documents, live-stock outbox
+INTERFACER_ZENFLOWS_URL=http://127.0.0.1:8000/api npm run dev:up   # live: no fixture bootstrap
+python3 scripts/p8-live-actors-probe.py
+python3 scripts/p7-outbox-probe.py faults  # with the fault proxy URL, real actors
+# GUI (interfacer-gui-medusa):
+MARKET_LIVE_E2E=1 TEST_BASE_URL=http://localhost:3002 playwright test tests/market-sellers.spec.ts --project=chromium
+```
+
+`p8-live-actors-probe.py` creates a designer, a maker, a seller, a buyer and an
+outsider as real Zenflows People with fresh keys, plus their own Design /
+Service / Product resources. Verified output (2026-10-26):
+
+```
+PASS P8 CATALOG: owner-only, spec-checked, strict versioned registration; idempotent re-registration
+PASS P8 LISTING: seller listed their own Zenflows resource ... (DPP derived, not asserted)
+PASS P8 STOCK: seller-signed delivery transferred 1 of the seller's real resource to the buyer ...; no stand-in raise
+PASS P8 BUILD: maker-signed production, Process ... -> produce -> transfer to buyer; seller console lists it
+PASS P8 REVALIDATION: a service transferred away is excluded with catalog_owner_changed
+```
+
+Refusals asserted on the way:
+- an outsider registering someone else's design (`catalog_owner_required`);
+- a Service registered as a design (`catalog_spec_mismatch`);
+- an unknown document key (`invalid_catalog_document`);
+- a signature over different params (`authorization_denied`);
+- an outsider listing the seller's product;
+- the dev signer (`dev_signer_disabled_live`);
+- a seller buying their own listing (`self_purchase_forbidden`);
+- the buyer or another seller preparing the delivery (`seller_order_required`).
+
+P7 fault scenarios rerun with real actors: 8/8, including lost-response and
+rejected transfers of live stock. The GUI live journey
+`market-sellers.spec.ts` drives it all through the browser and gives 1/1:
+- the designer, maker and seller register and list on `/market/offer`;
+- the buyer buys stock and a build;
+- each seller signs on `/market/sales`;
+- Zenflows confirms provider/receiver, the finished Process and the
+  destination owned by the buyer.
+
+The fixture GUI specs skip themselves in live mode.
+
 ## Inputs and authority
 
 - `docs/fixtures/economic-resource.json`: synthetic resource with name and controller.

@@ -6,6 +6,8 @@ import { signLocalOperation } from "../../../../scripts/sign-local-operation"
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   if (!allowStorefront(req, res)) return
+  // Live mode has no disposable keys at all: everyone signs with their wallet.
+  if (demo().live) return res.status(403).json({ reason: "dev_signer_disabled_live" })
   const { op, params, person } = await demoSigningOperation(req, await buyerScene(req))
   // A real buyer must use their own browser wallet; this route only ever signs
   // the original disposable fixture actors. Never add their key to a local file.

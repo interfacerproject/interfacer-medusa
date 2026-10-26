@@ -1,8 +1,9 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
-import { allowStorefront, demo } from "../../../../storefront/dev"
+import { allowStorefront, publicScene } from "../../../../storefront/dev"
 
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   if (!allowStorefront(req, res)) return
-  // Deliberately public disposable demo login, NOT an Admin/production credential.
-  res.json(demo())
+  // Standalone: the deliberately public disposable demo login, NOT an Admin or
+  // production credential. Live: commerce context and live listings only.
+  res.json(await publicScene(req))
 }

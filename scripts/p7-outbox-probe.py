@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 """P7: live outbox fault verification against a REAL local Zenflows.
 
-Requires `npm run dev:up` with INTERFACER_ZENFLOWS_URL pointing at
+Requires `npm run dev:up` in LIVE mode with INTERFACER_ZENFLOWS_URL pointing at
 scripts/zenflows-fault-proxy.cjs (default http://127.0.0.1:8100/api), which
-fronts Zenflows on :8000. Each scenario drives a real signed milestone, injects
-one failure, recovers, then counts what Zenflows actually holds for the marker.
+fronts Zenflows on :8000. Real People (no fixture keys) register a design and a
+service and list stock; each scenario drives a real milestone signed by the
+seller/maker, injects one failure, recovers, then counts what Zenflows actually
+holds for the marker.
 
   python3 scripts/p7-outbox-probe.py faults            # inline faults + recovery
   python3 scripts/p7-outbox-probe.py restart-prepare   # leaves a pending sync
   python3 scripts/p7-outbox-probe.py restart-verify    # after a restart: job drains it
 """
-import importlib
 import json
 import os
 import sys
 import time
 import urllib.request
 from pathlib import Path
-from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT / "scripts"))
-c = importlib.import_module("store-client")
+from live_actors import build_order, c, marketplace, milestone, stock_order  # noqa: E402
 PROXY = os.environ.get("FAULT_PROXY", "http://127.0.0.1:8100")
 ZENFLOWS = os.environ.get("ZENFLOWS_DIRECT", "http://127.0.0.1:8000/api")
 STATE = ROOT / ".tmp/p7-restart.json"
@@ -89,9 +89,11 @@ def assert_exactly_once(buyer, order_id, kind):
     sync = sync_for(buyer, order_id)
     assert sync["status"] == "done", sync
     nodes, events, procs = remote(sync["marker"])
-    creation = "produce" if kind == "build" else "raise"
-    assert len(nodes) == 2, ("source + transfer destination", nodes)
-    assert len(events.get(creation, [])) == 1 and len(events.get("transfer", [])) == 1, events
+    # Build: our produced resource + its transfer destination carry the marker.
+    # Live stock: only the destination (the seller's own resource keeps its note).
+    assert len(nodes) == (2 if kind == "build" else 1), nodes
+    assert len(events.get("produce", [])) == (1 if kind == "build" else 0) and not events.get("raise"), events
+    assert len(events.get("transfer", [])) == 1, events
     assert len(procs) == (1 if kind == "build" else 0), procs
     if kind == "build":
         assert events["produce"][0]["outputOf"]["id"] == procs[0]["id"] == sync["process_id"] and procs[0]["finished"]
@@ -102,40 +104,12 @@ def assert_exactly_once(buyer, order_id, kind):
     return sync, transfer
 
 
-def build_order(buyer):
-    matches = buyer.call("/dev/interfacer/match", {"designId": "ifdes_p4_organizer"})
-    quote = matches["matches"][0]["quote"]
-    cid = buyer.cart()
-    buyer.signed("/dev/interfacer/build-orders", {"cartId": cid, "quoteId": quote["id"]},
-                 {"action": "build", "cartId": cid, "quoteId": quote["id"]})
-    order = buyer.complete(cid)
-    buyer.capture(order)
-    return order["id"]
-
-
-def stock_order(buyer, scene):
-    query = urlencode({"region_id": scene["context"]["region_id"], "limit": 100,
-                       "fields": "id,variants.id,variants.manage_inventory,variants.inventory_quantity"}) + "".join(
-        "&" + urlencode({"id[]": p["product_id"]}) for p in scene["products"])
-    products = buyer.call("/store/products?" + query)["products"]
-    variant = next(p["variants"][0]["id"] for p in products if p["variants"][0]["inventory_quantity"] == 1)
-    cid = buyer.cart()
-    buyer.call(f"/store/carts/{cid}/line-items", {"variant_id": variant, "quantity": 1})
-    order = buyer.complete(cid)
-    buyer.capture(order)
-    return order["id"]
-
-
-def milestone(buyer, kind, order_id):
-    route, action = ("build-orders", "produce") if kind == "build" else ("orders", "deliver")
-    return buyer.signed(f"/dev/interfacer/{route}/{order_id}/{action}", {}, {"action": action, "orderId": order_id})["receipt"]
-
-
-def scenario(buyer, scene, name, kind, mode, match, delay_ms=3000):
+def scenario(m, name, kind, mode, match, delay_ms=3000):
     clear()
-    order_id = build_order(buyer) if kind == "build" else stock_order(buyer, scene)
+    buyer = m["buyer"]
+    order_id = build_order(m) if kind == "build" else stock_order(m, m["listings"].pop())
     fault(mode, match, delay_ms=delay_ms)
-    receipt = milestone(buyer, kind, order_id)
+    receipt = milestone(m, kind, order_id)
     first = receipt["zenflows_sync"]
     assert first["status"] == "pending" and not receipt["zenflows_event_id"], receipt
     before = len(writes_sent())
@@ -156,38 +130,43 @@ def scenario(buyer, scene, name, kind, mode, match, delay_ms=3000):
 
 
 def faults(only=None):
-    scene = c.request("/dev/store/config")
-    buyer = c.Buyer(scene)
+    m = marketplace(stock_units=2)
     try:
         if only == "stock":
-            return scenario(buyer, scene, "LOST RESPONSE raise (stock)", "stock", "lose-response", "raise")
-        scenario(buyer, scene, "LOST RESPONSE createProcess", "build", "lose-response", "createProcess")
-        scenario(buyer, scene, "LOST RESPONSE produce", "build", "lose-response", "produce")
-        scenario(buyer, scene, "LOST RESPONSE transfer", "build", "lose-response", "transfer")
-        scenario(buyer, scene, "REJECTED transfer", "build", "reject", "transfer")
-        scenario(buyer, scene, "LATE COMMIT produce", "build", "late", "produce")
-        scenario(buyer, scene, "ZENFLOWS DOWN produce (settle window)", "build", "down", "produce")
-        scenario(buyer, scene, "LOST RESPONSE raise (stock)", "stock", "lose-response", "raise")
+            return scenario(m, "LOST RESPONSE transfer (live stock)", "stock", "lose-response", "transfer")
+        scenario(m, "LOST RESPONSE createProcess", "build", "lose-response", "createProcess")
+        scenario(m, "LOST RESPONSE produce", "build", "lose-response", "produce")
+        scenario(m, "LOST RESPONSE transfer", "build", "lose-response", "transfer")
+        scenario(m, "REJECTED transfer", "build", "reject", "transfer")
+        scenario(m, "LATE COMMIT produce", "build", "late", "produce")
+        scenario(m, "ZENFLOWS DOWN produce (settle window)", "build", "down", "produce")
+        scenario(m, "LOST RESPONSE transfer (live stock)", "stock", "lose-response", "transfer")
+        scenario(m, "REJECTED transfer (live stock)", "stock", "reject", "transfer")
     finally:
         clear()
 
 
 def restart_prepare():
-    scene = c.request("/dev/store/config")
-    buyer = c.Buyer(scene)
+    m = marketplace(stock_units=0)
     clear()
-    order_id = build_order(buyer)
+    order_id = build_order(m)
     fault("down", "*", times=1000)
-    receipt = milestone(buyer, "build", order_id)
+    receipt = milestone(m, "build", order_id)
     assert receipt["zenflows_sync"]["status"] == "pending", receipt
     STATE.write_text(json.dumps({"order_id": order_id}))
     print(f"PREPARED P7 RESTART: order={order_id} sync pending with Zenflows down; now restart Medusa, then clear faults", flush=True)
 
 
+class Operator:
+    """Reads the local operator views (no login needed, loopback only)."""
+    @staticmethod
+    def call(path, body=None):
+        return c.request(path, body)
+
+
 def restart_verify():
     order_id = json.loads(STATE.read_text())["order_id"]
-    scene = c.request("/dev/store/config")
-    buyer = c.Buyer(scene)
+    buyer = Operator()
     clear()
     deadline = time.time() + 240
     while time.time() < deadline and sync_for(buyer, order_id)["status"] == "pending":

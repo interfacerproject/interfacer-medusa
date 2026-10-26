@@ -1,4 +1,5 @@
 import { createPublicKey, type KeyObject } from "node:crypto"
+import { MedusaError } from "@medusajs/framework/utils"
 import { decodeBase58 } from "./base58"
 import { resolveLocalPersonPublicKey } from "./local-person-key-resolver"
 import { signatureDenied, verifySignedOperation } from "./signed-envelope"
@@ -51,11 +52,15 @@ export async function verifyZenflowsOperation(
   } catch { return signatureDenied() }
 }
 
-// Fixture actors remain explicitly supported for the standalone local demo.
-// A trusted local registry entry is not an HTTP enrollment mechanism.
+// Fixture actors remain supported ONLY for the standalone local demo. In live
+// mode (a Zenflows URL is configured) every actor proves the key Zenflows has
+// registered for them; a disposable fixture identity is refused outright.
 export async function verifyCommerceOperation(auth: unknown, op: string, params: unknown, person: string): Promise<string> {
+  let fixture: KeyObject | undefined
+  try { fixture = resolveLocalPersonPublicKey(person) } catch { return signatureDenied() }
+  if (fixture && process.env.INTERFACER_ZENFLOWS_URL)
+    throw new MedusaError(MedusaError.Types.NOT_ALLOWED, "fixture_identity_forbidden")
   try {
-    const fixture = resolveLocalPersonPublicKey(person)
     if (fixture) return verifySignedOperation(auth, op, params, person, fixture)
     return await verifyZenflowsOperation(auth, op, params, person)
   } catch { return signatureDenied() }
