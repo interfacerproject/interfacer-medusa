@@ -31,9 +31,9 @@ PRs: [Medusa #1](https://github.com/interfacerproject/interfacer-medusa/pull/1),
 on [GUI #921](https://github.com/interfacerproject/interfacer-gui/pull/921).
 Runtime compatibility: Zenflows #84 and locally built/linked SDK #7.
 
-The former Claude-hosted artifact
-https://claude.ai/artifact/T61prEye93qEnT1eSD4LaC is a **historical snapshot**.
-This environment has no Claude artifact editing/publishing tool: this versioned
-guide and the local reviewer site are the maintained current copies. Do not
-claim that the old cloud artifact was republished or that this is a production
+The Claude-hosted artifact
+https://claude.ai/artifact/T61prEye93qEnT1eSD4LaC is a shareable summary page.
+It was refreshed on 2026-10-27 to the same state (outbox, real sellers, enforced
+authz, PR map), at the same link. This versioned guide and the local reviewer site
+remain the maintained copies with pinned sources. None of these is a production
 deployment.

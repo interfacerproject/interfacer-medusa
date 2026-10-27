@@ -6,8 +6,9 @@ mode), P9 enforced Zenflows authorization (seller-signed relay). Earlier:
 `cbf47518` / commit `e65e053`, pi session `01a16863`.
 Work remains on `feat/zenflows-real-events`; no production/main changes.
 Review snapshot: [bilingual field guide](review/README.md), backend PR #1 and GUI
-PR #922; implementation pins `ef02bdb` / `9c503df`. The old Claude cloud artifact
-is historical, not the maintained copy.
+PR #922 (both pushed 2026-10-27); implementation pins `8018cb4` / `f76a53e`. The
+shareable Claude artifact was refreshed on 2026-10-27; the versioned guide stays
+the maintained copy.
 
 ## What runs now
 
