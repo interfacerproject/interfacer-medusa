@@ -6,7 +6,7 @@
 +export const pages=[...story,...implementation,medusa];
 @@ -13,0 +15,5 @@
 + ['interfacer-medusa',1,'master',L('Durable outbox, real sellers, enforced Zenflows authz (26 Oct)','Outbox durevole, venditori reali, autorizzazioni Zenflows attive (26 ott)'),'draft'],
-+ ['interfacer-gui',922,'#921',L('Marketplace GUI + buyer wallet + local proxy (23 Oct)','GUI marketplace + wallet acquirente + proxy locale (23 ott)'),'draft'],
++ ['interfacer-gui',922,'#921',L('Wallet-signed buyers and sellers, sync states, enforced-authz relay (26 Oct)','Acquirenti e venditori con wallet, stati di sync, relay per autorizzazioni attive (26 ott)'),'draft'],
 + ['interfacer-gui',921,'main',L('Commerce dev spike — marketplace GUI base','Spike commerce dev — base GUI marketplace'),'draft'],
 + ['zenflows',84,'#80',L('Local marketplace compatibility target; authz-pdp base','Target locale marketplace; base authz-pdp'),'draft'],
 + ['interfacer-client',7,'main',L('Locally built SDK compatibility target, not published','SDK compatibile buildato localmente, non pubblicato'),'draft'],
