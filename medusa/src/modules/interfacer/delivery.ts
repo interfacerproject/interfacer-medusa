@@ -1,10 +1,13 @@
-import { verifySignedOperation } from "./signed-envelope"
+// Live mode: Zenflows-registered keys only; standalone: fixture keyring.
+import { verifyCommerceOperation } from "./zenflows-person"
 import type { IFulfillmentModuleService, MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, MedusaError, Modules } from "@medusajs/framework/utils"
 import { createOrderFulfillmentWorkflow, markOrderFulfillmentAsDeliveredWorkflow } from "@medusajs/medusa/core-flows"
 import { requireLocalCommerce, seedCommerce } from "./commerce-context"
+import { LIVE_POLICY } from "./live-listing"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
+import { enqueueMilestone, resumeMilestone, runZenflowsSyncSafely, withSync, type MilestoneInput } from "./zenflows-outbox"
 
 function refuse(reason: string): never {
   throw new MedusaError(MedusaError.Types.NOT_ALLOWED, reason)
@@ -81,7 +84,7 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
   return integration.withProjectionLock("interfacer-delivery-v1:" + orderId, async () => {
     let order = await readOrder(container, orderId)
     const { line, binding, identity } = await receiptFacts(container, order)
-    verifySignedOperation(auth, "commerce.order.deliver", { order_id: orderId }, binding.seller_agent_id)
+    await verifyCommerceOperation(auth, "commerce.order.deliver", { order_id: orderId }, binding.seller_agent_id)
     if (line.requires_shipping) refuse("interfacer_local_collection_only")
     let active = (order.fulfillments ?? []).filter(f => !f.canceled_at)
     if (active.length > 1) refuse("interfacer_fulfillment_reconciliation_required")
@@ -112,14 +115,33 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
       refuse("interfacer_delivery_required")
     }
     const [previous] = await integration.listReaReceipts({ order_id: orderId })
-    if (previous) return { created: false, receipt: previous }
-    // LOCAL STAND-IN SINK for live Zenflows economic-event creation; swap this
-    // write for an idempotent remote adapter/outbox, not a second checkout hook.
-    const receipt = await integration.createReaReceipts({
+    const has_point_in_time = new Date(delivered.delivered_at!)
+    // Live listing: one unit of the seller's REAL Zenflows resource moves to the
+    // buyer (no stand-in raise). Fixture listing: a per-listing stand-in.
+    const live = binding.policy_version === LIVE_POLICY
+    if (live && identity.zenflows_person_id === binding.seller_agent_id) refuse("self_purchase_forbidden")
+    const milestone: MilestoneInput = {
+      action: "transfer", quantity: Number(line.quantity), has_point_in_time,
+      note: `interfacer-marketplace transfer order=${orderId}`,
+      resource_name: `Interfacer listing ${binding.catalog_resource_id}`,
+      resource_tracking_id: binding.catalog_resource_id,
+      receiver: identity.zenflows_person_id ?? undefined,
+      ...(live ? { provider: binding.seller_agent_id, unit: binding.zenflows_unit_id ?? undefined,
+        source_resource_id: binding.catalog_resource_id } : {}),
+    }
+    if (previous) return { created: false, ...await resumeMilestone(integration, previous, milestone) }
+    // Durable outbox: receipt + pending Zenflows sync commit first, then the
+    // live write runs (inline here, else the scheduled job). A failed or lost
+    // remote step stays pending and is reconciled, never blindly replayed.
+    const { receipt, sync } = await enqueueMilestone(integration, {
       action: "transfer", provider_id: binding.seller_agent_id, receiver_id: identity.person_id,
       resource_id: binding.catalog_resource_id, dpp_id: binding.source_dpp_id,
-      order_id: orderId, quantity: Number(line.quantity), has_point_in_time: new Date(delivered.delivered_at!),
-    })
-    return { created: true, receipt }
+      order_id: orderId, quantity: Number(line.quantity), has_point_in_time,
+    }, milestone)
+    // Re-read after commit: the in-transaction DTO lacks DB-committed fields, and
+    // retries/listings must see byte-identical receipts.
+    if (!sync) return { created: true, receipt: await integration.retrieveReaReceipt(receipt.id) }
+    const state = await runZenflowsSyncSafely(integration, sync.id)
+    return { created: true, receipt: withSync(await integration.retrieveReaReceipt(receipt.id), state) }
   })
 }

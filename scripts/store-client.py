@@ -73,6 +73,17 @@ def bootstrap():
     return scene
 
 
+
+def bootstrap_live():
+    """LIVE mode (Zenflows configured): no fixture keys, buyer or listings at all.
+    Real sellers list their own Zenflows resources and everyone signs with their
+    wallet; the scene carries only the commerce context."""
+    scene = {"label": "LOCAL DEV — live Zenflows: real sellers and buyers sign with their own wallets",
+             "run": uuid.uuid4().hex[:12], "live": True, "products": []}
+    scene["context"] = request("/dev/interfacer/commerce", {})
+    (ROOT / ".tmp/storefront-demo.json").write_text(json.dumps(scene, indent=2) + "\n")
+    return scene
+
 ORDER_FIELDS = "+customer_id,+metadata,+items.metadata,+payment_collections.payments.*,+payment_collections.payment_sessions.*,+fulfillments.*,+items.detail.*"
 
 

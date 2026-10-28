@@ -2064,6 +2064,152 @@ within five minutes; existing business idempotency still applies. This is not a
 single-use replay guarantee. The fuller P6 hardening/UI tranche remains separate.
 [Full format, enforcement paths, real-vs-local boundaries and findings](docs/phase6a-findings.md).
 
+## P7 — Durable Zenflows milestone outbox
+
+Design: [`docs/superpowers/specs/2026-10-26-marketplace-hardening-design.md`](docs/superpowers/specs/2026-10-26-marketplace-hardening-design.md) (G1),
+operator notes in [`docs/zenflows-bridge.md`](docs/zenflows-bridge.md#durable-milestone-outbox-p7).
+
+### Unit (pure executor against an in-memory Zenflows)
+
+```bash
+npm run test:unit        # 36 tests, includes src/tests/zenflows-sync.test.ts
+npm --prefix medusa run typecheck
+```
+
+The fake implements Zenflows' note filter, the `EconomicResource.previous` rule,
+transfer destinations inheriting the source note, and `processes(after)` id
+paging. The tests cover:
+- build/stock happy paths;
+- a lost response after the Process, the produce and the transfer commit;
+- an ambiguous failure deferred inside the 60 s window, then re-sent once;
+- a late commit, found and not duplicated;
+- a rejected transfer, retried;
+- a local save failing right after a remote commit, followed by an executor
+  restart;
+- tampered payload and changed target (zero calls);
+- duplicate marker (blocked), facts mismatch (blocked);
+- the id lower bound against a real Zenflows Process id.
+
+### Live, against the real local Zenflows (2026-10-26)
+
+```bash
+node scripts/zenflows-fault-proxy.cjs &                       # :8100 -> Zenflows :8000
+INTERFACER_ZENFLOWS_URL=http://127.0.0.1:8100/api INTERFACER_ZENFLOWS_PROVIDER=<org> \
+  INTERFACER_ZENFLOWS_UNIT=<unit> INTERFACER_ZENFLOWS_RECEIVER=<demo buyer> npm run dev:up
+python3 scripts/p7-outbox-probe.py faults
+python3 scripts/p7-outbox-probe.py restart-prepare && npm run dev:down && <dev:up again> \
+  && python3 scripts/p7-outbox-probe.py restart-verify
+(cd medusa && medusa exec ./src/scripts/verify-p7-outbox.ts)  # same DATABASE_URL
+```
+
+Each scenario drives a real signed milestone, injects one failure through the
+proxy and recovers. It then queries Zenflows for the marker and asserts:
+- exactly 2 resources (source + transfer destination);
+- exactly 1 creation event and 1 transfer;
+- exactly 1 finished Process for builds, with `produce.outputOf` matching;
+- the receipt's handover id equals the sync's transfer id and the Zenflows event.
+
+Actual output:
+
+```
+PASS P7 LOST RESPONSE createProcess: ... first=process/fetch failed -> done after 1 failed attempt(s); exactly one of each remote object
+PASS P7 LOST RESPONSE produce: ... first=create/fetch failed -> done ...
+PASS P7 LOST RESPONSE transfer: ... first=transfer/fetch failed -> done ...
+PASS P7 REJECTED transfer: ... first=-/zenflows_error: [{"message":"fault-proxy: injected rejection"}] -> done ...
+PASS P7 LATE COMMIT produce: ... first=create/fetch failed -> done ...
+PASS P7 ZENFLOWS DOWN produce (settle window): ... no re-send inside 60 s, done after it
+PASS P7 LOST RESPONSE raise (stock): ... done ...
+PASS P7 RESTART: ... drained by the scheduled job after a Medusa restart; exactly one Process/produce/transfer
+PASS P7 ATOMIC: failed outbox insert (duplicate marker) rolled back its receipt; 0 receipts / 0 syncs
+```
+
+An unplanned real-world case also occurred. The first live run hit the
+receipts' immutability trigger at completion, which is the "local DB failure
+after remote commit" case. After the fix (the receipt row is never updated;
+the id lives on the sync), the scheduled job completed that row on its own: one
+Process, one produce, one transfer, the same transfer id. GUI journeys:
+`MARKET_LIVE_E2E=1 MARKET_E2E=1 playwright test tests/market-identity.spec.ts tests/market.spec.ts`
+gives 4/4. The historical standalone harness `npm run test:all` gives 9/9.
+
+## P8 — Real actors in live mode (registered catalog, real listings, seller-signed milestones)
+
+Design: [`docs/superpowers/specs/2026-10-26-marketplace-hardening-design.md`](docs/superpowers/specs/2026-10-26-marketplace-hardening-design.md) (G2 + G3),
+plan [`docs/superpowers/plans/2026-10-26-p2-real-actors.md`](docs/superpowers/plans/2026-10-26-p2-real-actors.md).
+
+```bash
+npm run test:unit                       # 44: registry adapter, actor policy, catalog documents, live-stock outbox
+INTERFACER_ZENFLOWS_URL=http://127.0.0.1:8000/api npm run dev:up   # live: no fixture bootstrap
+python3 scripts/p8-live-actors-probe.py
+python3 scripts/p7-outbox-probe.py faults  # with the fault proxy URL, real actors
+# GUI (interfacer-gui-medusa):
+MARKET_LIVE_E2E=1 TEST_BASE_URL=http://localhost:3002 playwright test tests/market-sellers.spec.ts --project=chromium
+```
+
+`p8-live-actors-probe.py` creates a designer, a maker, a seller, a buyer and an
+outsider as real Zenflows People with fresh keys, plus their own Design /
+Service / Product resources. Verified output (2026-10-26):
+
+```
+PASS P8 CATALOG: owner-only, spec-checked, strict versioned registration; idempotent re-registration
+PASS P8 LISTING: seller listed their own Zenflows resource ... (DPP derived, not asserted)
+PASS P8 STOCK: seller-signed delivery transferred 1 of the seller's real resource to the buyer ...; no stand-in raise
+PASS P8 BUILD: maker-signed production, Process ... -> produce -> transfer to buyer; seller console lists it
+PASS P8 REVALIDATION: a service transferred away is excluded with catalog_owner_changed
+```
+
+Refusals asserted on the way:
+- an outsider registering someone else's design (`catalog_owner_required`);
+- a Service registered as a design (`catalog_spec_mismatch`);
+- an unknown document key (`invalid_catalog_document`);
+- a signature over different params (`authorization_denied`);
+- an outsider listing the seller's product;
+- the dev signer (`dev_signer_disabled_live`);
+- a seller buying their own listing (`self_purchase_forbidden`);
+- the buyer or another seller preparing the delivery (`seller_order_required`).
+
+P7 fault scenarios rerun with real actors: 8/8, including lost-response and
+rejected transfers of live stock. The GUI live journey
+`market-sellers.spec.ts` drives it all through the browser and gives 1/1:
+- the designer, maker and seller register and list on `/market/offer`;
+- the buyer buys stock and a build;
+- each seller signs on `/market/sales`;
+- Zenflows confirms provider/receiver, the finished Process and the
+  destination owned by the buyer.
+
+The fixture GUI specs skip themselves in live mode.
+
+## P9 — Enforced Zenflows authorization (seller-signed relay)
+
+Plan: [`docs/superpowers/plans/2026-10-26-p3-enforced-authz.md`](docs/superpowers/plans/2026-10-26-p3-enforced-authz.md).
+
+```bash
+npm run test:unit   # 50: signed message rules, Ed25519 round trip, signed transport,
+                    # executor waits for provider signatures, pinned relay queries
+# Zenflows (zenflows-pr84): same env + GQL_AUTH_CALLS=true AUTHZ_ENFORCE=true AUTHZ_ALLOW_UNCHECKED=false
+ZENFLOWS_ADMIN=<admin> node scripts/zenflows-actor.cjs create medusa-service
+INTERFACER_ZENFLOWS_URL=http://127.0.0.1:8100/api INTERFACER_ZENFLOWS_SIGNED_WRITES=true \
+  INTERFACER_ZENFLOWS_SERVICE_USER=<user> INTERFACER_ZENFLOWS_SERVICE_SEED=<seed> npm run dev:up
+ZENFLOWS_ADMIN=<admin> python3 scripts/p8-live-actors-probe.py
+ZENFLOWS_ADMIN=<admin> python3 scripts/p7-outbox-probe.py faults   # + restart-prepare / restart-verify
+# GUI:
+MARKET_TEST_ZENFLOWS_ADMIN=<admin> MARKET_LIVE_E2E=1 TEST_BASE_URL=http://localhost:3002 \
+  playwright test tests/market-sellers.spec.ts --project=chromium
+```
+
+Verified 2026-10-26 against the enforced local Zenflows:
+- Unsigned calls are refused ("zenflows-user and/or zenflows-sign headers are
+  missing"). A buyer-signed transfer of the seller's resource is `forbidden`; the
+  seller-signed one passes.
+- P8 all green, plus `PASS P8 RELAY`: the buyer gets no body; a tampered body, the
+  wrong signer and the wrong step are refused before any send. Stock: 1 relayed
+  signature (transfer). Build: 3 (Process, produce, transfer).
+- P7 faults 8/8 and P7 RESTART: lost responses reconcile inside the relay loop.
+  "Zenflows down" waits out the 60 s window with no resend before the maker signs
+  again. After a Medusa restart the job reconciles and the maker signs the rest.
+  Each case ends with exactly one remote object of each kind.
+- The GUI live journey passes: the seller and maker sign every Zenflows write in
+  the browser through the sales console relay.
+
 ## Inputs and authority
 
 - `docs/fixtures/economic-resource.json`: synthetic resource with name and controller.

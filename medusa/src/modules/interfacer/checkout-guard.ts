@@ -55,6 +55,8 @@ export async function checkoutEvidence(container: MedusaContainer, cart: Checkou
     } }]
   })
   if (new Set(lines.map(l => l.binding.id)).size !== lines.length) refuse("interfacer_single_unit_required")
+  // A seller cannot buy their own listing (a transfer to self is not a sale).
+  if (lines.some(l => l.binding.seller_agent_id === identity.person_id)) refuse("self_purchase_forbidden")
   return { kind: "stock" as const, customerId, lines, purchase: {
     buyer_person_id: identity.person_id,
     identity_link_id: identity.id,

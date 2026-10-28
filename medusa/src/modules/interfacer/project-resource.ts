@@ -42,10 +42,28 @@ export async function projectResource(
   required(passport?.ID)
   if (passport?.ProductID !== resource.id) throw new Error("passport_binding_mismatch")
 
+  if (process.env.INTERFACER_ZENFLOWS_URL) throw new Error("fixture_identity_forbidden: use a live listing")
   const subject = verifySignedOperation(auth, "commerce.listing.create", { resource, dpp: passport }, resource.primaryAccountable.id)
+  return projectVerifiedResource(container, resource, passport, subject, LOCAL_POLICY, afterProduct)
+}
+
+export type ListingPolicy = { policy_version: string; permission_epoch: string; zenflows_unit_id?: string | null }
+const LOCAL_POLICY: ListingPolicy = { policy_version: "local-ed25519-envelope-v1", permission_epoch: "local-keyring-v1" }
+
+// Idempotent Medusa projection of an ALREADY VERIFIED seller resource. Callers
+// own the proof: the fixture envelope above, or live-listing.ts (Zenflows key
+// + re-read resource facts). Live and fixture operation keys never collide.
+export async function projectVerifiedResource(
+  container: MedusaContainer, resource: Resource, passport: Passport, subject: string,
+  policy: ListingPolicy, afterProduct?: () => void,
+) {
+  required(resource?.id)
+  required(resource?.name)
+  required(passport?.ID)
+  if (passport?.ProductID !== resource.id) throw new Error("passport_binding_mismatch")
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   const products = container.resolve<IProductModuleService>(Modules.PRODUCT)
-  const operationKey = sourceHash(["interfacer-local-v1", resource.id, "default"])
+  const operationKey = sourceHash([policy === LOCAL_POLICY ? "interfacer-local-v1" : "interfacer-live-v1", resource.id, "default"])
   const source = sourceHash(resource)
   const dpp = sourceHash(passport)
 
@@ -125,8 +143,9 @@ export async function projectResource(
       medusa_variant_id: product.variants[0].id,
       configuration_key: "default",
       approved_revision: source,
-      policy_version: "local-ed25519-envelope-v1",
-      permission_epoch: "local-keyring-v1",
+      policy_version: policy.policy_version,
+      permission_epoch: policy.permission_epoch,
+      zenflows_unit_id: policy.zenflows_unit_id ?? null,
       status: "draft",
     })
     return { created: !recovered, recovered, binding, product }

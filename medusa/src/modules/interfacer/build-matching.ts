@@ -5,6 +5,8 @@ import type InterfacerService from "./service"
 import { requireLocalCommerce } from "./commerce-context"
 import { formBuildQuote, matchServices, parseDesign, parseService, priceCents, termsHash } from "./matching"
 import { designs, services } from "./matching-fixtures"
+import { catalogEntryToService, listLiveCatalog } from "./catalog"
+import { liveMode } from "./zenflows-registry"
 
 const LOCK = "interfacer-build-matching-v1"
 async function all<T>(list: (skip: number) => Promise<T[]>): Promise<T[]> {
@@ -15,7 +17,10 @@ async function all<T>(list: (skip: number) => Promise<T[]>): Promise<T[]> {
     if (page.length < 100) return rows
   }
 }
+// Live mode: ONLY registered Zenflows resources (revalidated now). Standalone:
+// the synthetic seeds of the historical harness.
 export async function listDesigns(integration: InterfacerService) {
+  if (liveMode()) return (await listLiveCatalog(integration)).designs
   return (await all(skip => integration.listDesigns({}, { skip, take: 100, order: { id: "ASC" } }))).map(parseDesign)
 }
 function serviceData(row: Awaited<ReturnType<InterfacerService["listServices"]>>[number]) {
@@ -23,7 +28,28 @@ function serviceData(row: Awaited<ReturnType<InterfacerService["listServices"]>>
     per_unit_price_eur: row.per_unit_price_cents / 100 })
 }
 export async function listServices(integration: InterfacerService) {
+  if (liveMode()) return (await listLiveCatalog(integration)).services
   return (await all(skip => integration.listServices({}, { skip, take: 100, order: { id: "ASC" } }))).map(serviceData)
+}
+
+// The design to match plus candidate services; live exclusions (resource gone,
+// owner changed) are reported as rejections, never quoted.
+async function matchSource(integration: InterfacerService, designId: string) {
+  if (liveMode()) {
+    const catalog = await listLiveCatalog(integration)
+    const design = catalog.designs.find(d => d.id === designId)
+    if (!design) {
+      const excluded = catalog.excluded.find(e => e.kind === "design" && e.resource_id === designId)
+      if (excluded) throw new MedusaError(MedusaError.Types.NOT_ALLOWED, excluded.reason)
+      throw new MedusaError(MedusaError.Types.NOT_FOUND, "design_not_found")
+    }
+    const excluded = catalog.excluded.filter(e => e.kind === "service")
+      .map(e => ({ service: catalogEntryToService(e.entry), reason: e.reason }))
+    return { design, services: catalog.services, excluded }
+  }
+  const [row] = await integration.listDesigns({ id: designId })
+  if (!row) throw new MedusaError(MedusaError.Types.NOT_FOUND, "design_not_found")
+  return { design: parseDesign(row), services: await listServices(integration), excluded: [] }
 }
 
 export async function seedMatching(container: MedusaContainer) {
@@ -56,10 +82,8 @@ export async function matchDesign(container: MedusaContainer, designId: string) 
   requireLocalCommerce()
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   return integration.withProjectionLock(LOCK, async () => {
-    const [row] = await integration.listDesigns({ id: designId })
-    if (!row) throw new MedusaError(MedusaError.Types.NOT_FOUND, "design_not_found")
-    const design = parseDesign(row)
-    const result = matchServices(design, await listServices(integration))
+    const { design, services, excluded } = await matchSource(integration, designId)
+    const result = matchServices(design, services)
     const matches = []
     for (const service of result.matches) {
       const terms = formBuildQuote(design, service)
@@ -71,6 +95,6 @@ export async function matchDesign(container: MedusaContainer, designId: string) 
       const quote = previous ?? await integration.createBuildQuotes(terms)
       matches.push({ service, quote })
     }
-    return { matches, rejected: result.rejected }
+    return { matches, rejected: [...result.rejected, ...excluded] }
   })
 }

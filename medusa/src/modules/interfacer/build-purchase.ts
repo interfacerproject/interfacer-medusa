@@ -1,4 +1,4 @@
-import { verifySignedOperation } from "./signed-envelope"
+import { verifyCommerceOperation } from "./zenflows-person"
 import type { ICartModuleService, MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, MedusaError, Modules, ProductStatus } from "@medusajs/framework/utils"
 import { addToCartWorkflow, createProductsWorkflow, updateRegionsWorkflow } from "@medusajs/medusa/core-flows"
@@ -75,13 +75,14 @@ export async function acceptBuild(container: MedusaContainer, cartId: string, qu
     if (cart.customer_id !== customerId) buildRefuse("interfacer_cart_customer_mismatch")
     const [identity] = await integration.listIdentityLinks({ customer_id: customerId })
     if (!identity) buildRefuse("interfacer_bound_customer_required")
-    verifySignedOperation(auth, "commerce.order.build.purchase", { cart_id: cartId, quote_id: quoteId }, identity.person_id)
+    await verifyCommerceOperation(auth, "commerce.order.build.purchase", { cart_id: cartId, quote_id: quoteId }, identity.person_id)
     const [previous] = await integration.listBuildAcceptances({ cart_id: cartId })
     if (previous && (previous.quote_id !== quoteId || previous.customer_id !== customerId))
       buildRefuse("build_quote_swap_forbidden")
     if (cart.completed_at) buildRefuse("build_cart_already_completed")
     if (!previous && cart.items?.length) buildRefuse("build_empty_cart_required")
     const { offer, quote, context } = await offerFor(container, quoteId)
+    if (quote.provider_person_id === identity.person_id) buildRefuse("self_purchase_forbidden")
     if (cart.currency_code !== "eur" || cart.region_id !== context.region_id ||
         cart.sales_channel_id !== context.sales_channel_id) buildRefuse("build_commerce_context_required")
     const query = container.resolve(ContainerRegistrationKeys.QUERY)

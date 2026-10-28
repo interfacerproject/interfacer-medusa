@@ -1,4 +1,5 @@
-import { verifySignedOperation } from "./signed-envelope"
+// Live mode: Zenflows-registered keys only; standalone: fixture keyring.
+import { verifyCommerceOperation } from "./zenflows-person"
 import type { MedusaContainer, IProductModuleService } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, Modules, ProductStatus } from "@medusajs/framework/utils"
 import { updateProductsWorkflow } from "@medusajs/medusa/core-flows"
@@ -21,7 +22,7 @@ export async function publishListing(container: MedusaContainer, listingId: stri
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   const [binding] = await integration.listListingBindings({ id: listingId })
   if (!binding) throw new Error("listing_not_found")
-  verifySignedOperation(auth, "commerce.listing.publish", { listing_id: listingId, priceEUR }, binding.seller_agent_id)
+  await verifyCommerceOperation(auth, "commerce.listing.publish", { listing_id: listingId, priceEUR }, binding.seller_agent_id)
   const commerce = await seedCommerce(container)
   // Same lock as projection: retries and concurrent publishes cannot add prices.
   return integration.withProjectionLock(binding.operation_key, async () => {

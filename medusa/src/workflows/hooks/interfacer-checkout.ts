@@ -1,8 +1,9 @@
+import { verifyCommerceOperation } from "../../modules/interfacer/zenflows-person"
 import { completeCartWorkflow } from "@medusajs/medusa/core-flows"
 import { checkoutEvidence, refuse } from "../../modules/interfacer/checkout-guard"
 import { canonicalJson } from "../../modules/interfacer/project-resource"
 
-import { checkoutOperationParams, verifySignedOperation } from "../../modules/interfacer/signed-envelope"
+import { checkoutOperationParams } from "../../modules/interfacer/signed-envelope"
 
 // Always on, including when fixture mode is disabled, and for internal workflow
 // callers. Throwing/infrastructure failure stops completion before order/payment.
@@ -13,7 +14,7 @@ completeCartWorkflow.hooks.validate(async ({ cart }, { container }) => {
   if (canonicalJson(cart.metadata?.interfacer_purchase) !== canonicalJson(evidence.purchase)) {
     refuse("interfacer_checkout_evidence_required")
   }
-  verifySignedOperation(cart.metadata?.interfacer_authorization, "commerce.order.authorize",
+  await verifyCommerceOperation(cart.metadata?.interfacer_authorization, "commerce.order.authorize",
     checkoutOperationParams(cart, evidence.purchase), evidence.purchase.buyer_person_id)
   for (const { item, metadata } of evidence.lines) {
     if (evidence.kind === "stock" && (!item.variant?.manage_inventory || item.variant.allow_backorder ||

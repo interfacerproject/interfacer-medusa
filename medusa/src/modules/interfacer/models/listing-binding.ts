@@ -16,6 +16,9 @@ export const ListingBinding = model.define("interfacer_listing_binding", {
   policy_version: model.text(),
   permission_epoch: model.text(),
   status: model.enum(["draft"]).default("draft"),
+  // LIVE listings only: the unit of the seller's Zenflows resource (transfers
+  // must use it). Null for fixture listings.
+  zenflows_unit_id: model.text().nullable(),
 })
 
 export const ProjectionIntent = model.define("interfacer_projection_intent", {
