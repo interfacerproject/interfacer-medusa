@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Dyne.org foundation <foundation@dyne.org>.
+#
+# Image: ghcr.io/interfacerproject/interfacer-medusa
+#   master  -> :latest
+#   staging -> :staging (the integration branch deployed on dpp-dev)
+name: Create and publish a Docker image
+
+on:
+  push:
+    branches: ["master", "staging"]
+  workflow_dispatch:
+
+jobs:
+  publish_docker_image:
+    uses: interfacerproject/workflows/.github/workflows/publish-ghcr.yml@main
+    secrets: inherit
