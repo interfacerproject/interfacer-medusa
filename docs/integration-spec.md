@@ -678,6 +678,22 @@ Separate:
 
 A capability match alone is not an accepted order.
 
+### 6.3.1 Build listings (implemented 2026-11-09)
+
+Live matching does not offer every registered service for every design. The
+owner of a registered fabrication service **lists** the registered designs it
+builds, with its own setup fee, per-piece price and lead time
+(`POST /dev/interfacer/catalog/build-listings`, signed `catalog.build.list`,
+immutable revisions per service × design; `active: false` pauses it). A listing
+counts only while its signer still owns the live service.
+
+Matching then quotes ONLY services with an active listing for the design, at the
+listed price (carried in the quote snapshot, so quote integrity holds), still
+rechecking compatibility: a listed service that no longer fits is rejected with
+the reason. Listing requires a fit at signing time. Matches carry the lead time.
+A request/confirm/counter-offer flow is deliberately deferred (GUI Beads
+`interfacer-gui-pvo`).
+
 ### 6.4 Matching algorithm
 
 Use deterministic rules first:
