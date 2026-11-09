@@ -3,7 +3,8 @@ import { verifyCommerceOperation } from "./zenflows-person"
 import type { IFulfillmentModuleService, MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, MedusaError, Modules } from "@medusajs/framework/utils"
 import { createOrderFulfillmentWorkflow, markOrderFulfillmentAsDeliveredWorkflow } from "@medusajs/medusa/core-flows"
-import { requireLocalCommerce, seedCommerce } from "./commerce-context"
+import { seedCommerce } from "./commerce-context"
+import { requireCommerceMode } from "./deployment"
 import { LIVE_POLICY } from "./live-listing"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
@@ -79,7 +80,7 @@ async function localCollectionOption(container: MedusaContainer) {
 // Retrying after delivery committed but before the receipt write resumes from
 // persisted delivered_at; it does not deliver twice. Locks span workflow commits.
 export async function deliverOrder(container: MedusaContainer, orderId: string, auth?: unknown) {
-  requireLocalCommerce()
+  requireCommerceMode()
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   return integration.withProjectionLock("interfacer-delivery-v1:" + orderId, async () => {
     let order = await readOrder(container, orderId)

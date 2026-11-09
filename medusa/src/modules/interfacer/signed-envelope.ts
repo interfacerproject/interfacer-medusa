@@ -2,10 +2,13 @@ import { verify, type KeyObject } from "node:crypto"
 import { MedusaError } from "@medusajs/framework/utils"
 import { canonicalOperation } from "./envelope-canonical"
 import { resolveLocalPersonPublicKey } from "./local-person-key-resolver"
+import { commerceAudience } from "./deployment"
 
 export interface Resource { id: string; name: string; primaryAccountable: { id: string } }
 export interface SignedOperation {
-  envelope: { op: string; params: unknown; person_id: string; nonce: string; issued_at: string }
+  // aud: the instance this operation is for. Required exactly when this Medusa
+  // has an audience (pilot); absent otherwise, so envelopes never cross over.
+  envelope: { op: string; params: unknown; person_id: string; nonce: string; issued_at: string; aud?: string }
   signature: string // exactly 64 Ed25519 signature bytes in canonical base64
 }
 export const AUTH_HEADER = "x-interfacer-auth"
@@ -24,8 +27,9 @@ export function verifySignedOperation(auth: unknown, op: string, params: unknown
     const a = auth as SignedOperation
     if (!a || Object.keys(a).sort().join(",") !== "envelope,signature") signatureDenied()
     const e = a.envelope
-    if (!e || Object.keys(e).sort().join(",") !== "issued_at,nonce,op,params,person_id" ||
-        e.op !== op || typeof e.person_id !== "string" || e.person_id !== controller ||
+    const audience = commerceAudience()
+    if (!e || Object.keys(e).sort().join(",") !== (audience ? "aud," : "") + "issued_at,nonce,op,params,person_id" ||
+        (audience && e.aud !== audience) || e.op !== op || typeof e.person_id !== "string" || e.person_id !== controller ||
         typeof e.nonce !== "string" || !/^[0-9a-f]{32}$/.test(e.nonce) ||
         typeof e.issued_at !== "string" || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(e.issued_at) ||
         !Number.isFinite(Date.parse(e.issued_at)) ||

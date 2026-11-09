@@ -14,8 +14,9 @@ completeCartWorkflow.hooks.validate(async ({ cart }, { container }) => {
   if (canonicalJson(cart.metadata?.interfacer_purchase) !== canonicalJson(evidence.purchase)) {
     refuse("interfacer_checkout_evidence_required")
   }
+  // Stored by the checkout middleware, which consumed its nonce on arrival.
   await verifyCommerceOperation(cart.metadata?.interfacer_authorization, "commerce.order.authorize",
-    checkoutOperationParams(cart, evidence.purchase), evidence.purchase.buyer_person_id)
+    checkoutOperationParams(cart, evidence.purchase), evidence.purchase.buyer_person_id, { stored: true })
   for (const { item, metadata } of evidence.lines) {
     if (evidence.kind === "stock" && (!item.variant?.manage_inventory || item.variant.allow_backorder ||
         (item.variant.inventory_items?.length !== 1 ||

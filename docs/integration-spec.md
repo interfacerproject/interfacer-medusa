@@ -890,6 +890,12 @@ Requirements:
 
 Extend PDP transport validation for commerce actions to check that the signed envelope agrees with the requested action and resource binding. The current signature re-verification alone does not establish that correspondence.
 
+**Pilot status (2026-11-10):** the commerce envelope keeps its current shape
+(`op`, `params`, `person_id`, `nonce`, `issued_at`) and gains `aud`, required
+exactly when the instance has an audience (pilot) and absent locally. A pilot
+records each verified `(person, nonce)` once in Postgres and refuses replays.
+See `docs/deploy-pilot.md`.
+
 ### 7.4 Fail-closed behavior
 
 | Failure | Required result |

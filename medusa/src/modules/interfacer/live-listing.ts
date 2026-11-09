@@ -3,7 +3,7 @@
 // sale later transfers one unit of this very resource (no stand-in raise).
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { MedusaError } from "@medusajs/framework/utils"
-import { requireLocalCommerce } from "./commerce-context"
+import { requireCommerceMode } from "./deployment"
 import { projectVerifiedResource } from "./project-resource"
 import { verifyZenflowsOperation } from "./zenflows-person"
 import { derivedDppReference, liveMode, readInstance, readResource } from "./zenflows-registry"
@@ -18,7 +18,7 @@ function refuse(reason: string): never {
 
 // The request body IS the signed params ({resource_id}); the signer is the seller.
 export async function createLiveListing(container: MedusaContainer, body: unknown, auth: unknown) {
-  requireLocalCommerce()
+  requireCommerceMode()
   if (!liveMode()) refuse("listing_live_mode_required")
   const envelope = (auth as SignedOperation | undefined)?.envelope
   const person = envelope?.person_id

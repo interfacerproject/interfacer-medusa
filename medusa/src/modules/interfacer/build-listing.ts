@@ -6,7 +6,7 @@ import type { MedusaContainer } from "@medusajs/framework/types"
 import { MedusaError } from "@medusajs/framework/utils"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
-import { requireLocalCommerce } from "./commerce-context"
+import { requireCommerceMode } from "./deployment"
 import { listLiveCatalog } from "./catalog"
 import { fixedPrice, priceCents, rejectionReasons, termsHash, type DesignData, type ServiceData } from "./matching"
 import { verifyZenflowsOperation } from "./zenflows-person"
@@ -138,7 +138,7 @@ export async function listedForDesign(integration: InterfacerService, designId: 
 // The request body IS the signed params; the signer must own the registered
 // service. Pausing (active:false) is always allowed; listing requires a fit.
 export async function registerBuildListing(container: MedusaContainer, body: unknown, auth: unknown) {
-  requireLocalCommerce()
+  requireCommerceMode()
   if (!liveMode()) refuse("catalog_live_mode_required")
   const envelope = (auth as SignedOperation | undefined)?.envelope
   const person = envelope?.person_id

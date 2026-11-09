@@ -11,17 +11,28 @@ import { INTERFACER_MODULE } from "../modules/interfacer"
 import type InterfacerService from "../modules/interfacer/service"
 import { readBuildQuote } from "../modules/interfacer/build-purchase"
 import { LIVE_POLICY } from "../modules/interfacer/live-listing"
+import { commerceAudience, pilotMode } from "../modules/interfacer/deployment"
+import { commerceContext } from "../modules/interfacer/commerce-context"
 
 export const DEMO_FILE = resolve(__dirname, "../../../.tmp/storefront-demo.json")
 // Standalone: a disposable fixture buyer + fixture listings. Live (a Zenflows
 // URL is configured): context only; every buyer/seller signs with their wallet.
 export type Demo = {
   label: string; run: string; live?: boolean; email: string; password: string; buyer_person_id: string
-  customer_id: string; context: { publishable_key: string; region_id: string; sales_channel_id: string }
+  customer_id: string; context: { publishable_key: string; region_id: string; sales_channel_id: string; audience?: string }
   products: { product_id: string; variant_id: string; listing_id: string; resource_id: string; dpp_id: string;
     seller_person_id?: string }[]
 }
 export function demo(): Demo { return JSON.parse(readFileSync(DEMO_FILE, "utf8")) }
+// A pilot has no scene file: its context comes from the database, plus the
+// audience every signed envelope must name.
+async function sceneBase(req: MedusaRequest): Promise<Demo> {
+  if (!pilotMode()) return demo()
+  const ctx = await commerceContext(req.scope)
+  return { label: "Interfacer marketplace", run: "pilot", live: true, email: "", password: "", buyer_person_id: "",
+    customer_id: "", products: [], context: { publishable_key: ctx.publishable_key, region_id: ctx.region_id,
+      sales_channel_id: ctx.sales_channel_id, audience: commerceAudience() } }
+}
 export function allowStorefront(req: MedusaRequest, res: MedusaResponse): boolean {
   if (!allowLocalRequest(req, res)) return false
   const loopback = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(req.socket?.remoteAddress ?? "")
@@ -57,14 +68,14 @@ export async function liveProducts(req: MedusaRequest): Promise<Demo["products"]
 }
 // What the GUI may know before login. Live mode never discloses a login.
 export async function publicScene(req: MedusaRequest) {
-  const scene = demo()
+  const scene = await sceneBase(req)
   if (!scene.live) return scene
   return { label: scene.label, run: scene.run, live: true, context: scene.context, products: await liveProducts(req) }
 }
 // Per-request scene keeps the catalog/supplier fixture boundary but derives the
 // buyer from the authenticated native Medusa account and immutable identity link.
 export async function buyerScene(req: MedusaRequest): Promise<Demo> {
-  const scene = demo()
+  const scene = await sceneBase(req)
   const customerId = (req as AuthenticatedMedusaRequest).auth_context?.actor_id
   if (!scene.live && customerId === scene.customer_id) return scene
   if (!customerId) refuse("demo_customer_required")

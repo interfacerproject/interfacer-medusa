@@ -5,7 +5,8 @@ import { ContainerRegistrationKeys, Modules, ProductStatus } from "@medusajs/fra
 import { updateProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
-import { requireLocalCommerce, seedCommerce } from "./commerce-context"
+import { seedCommerce } from "./commerce-context"
+import { requireCommerceMode } from "./deployment"
 
 // Euros in major units (Medusa v2), NOT cents. Only a signed controller operation
 // can set this. No Store/cart handler consumes priceEUR or a client unit_price.
@@ -17,7 +18,7 @@ export function validatePriceEUR(value: unknown): asserts value is number {
 }
 
 export async function publishListing(container: MedusaContainer, listingId: string, priceEUR: unknown, auth?: unknown) {
-  requireLocalCommerce()
+  requireCommerceMode()
   validatePriceEUR(priceEUR)
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   const [binding] = await integration.listListingBindings({ id: listingId })

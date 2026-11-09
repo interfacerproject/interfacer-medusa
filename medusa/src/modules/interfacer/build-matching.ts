@@ -2,7 +2,7 @@ import type { MedusaContainer } from "@medusajs/framework/types"
 import { MedusaError } from "@medusajs/framework/utils"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
-import { requireLocalCommerce } from "./commerce-context"
+import { requireCommerceMode } from "./deployment"
 import { formBuildQuote, matchServices, parseDesign, parseService, priceCents, termsHash } from "./matching"
 import { designs, services } from "./matching-fixtures"
 import { catalogEntryToService, listLiveCatalog } from "./catalog"
@@ -58,7 +58,7 @@ async function matchSource(integration: InterfacerService, designId: string) {
 }
 
 export async function seedMatching(container: MedusaContainer) {
-  requireLocalCommerce()
+  requireCommerceMode()
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   return integration.withProjectionLock(LOCK, async () => {
     for (const input of designs) {
@@ -84,7 +84,7 @@ export async function seedMatching(container: MedusaContainer) {
 }
 
 export async function matchDesign(container: MedusaContainer, designId: string) {
-  requireLocalCommerce()
+  requireCommerceMode()
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   return integration.withProjectionLock(LOCK, async () => {
     const { design, services, excluded, leadDays } = await matchSource(integration, designId)

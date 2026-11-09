@@ -1,0 +1,12 @@
+.git
+.github
+.cache
+.tmp
+node_modules
+medusa/node_modules
+medusa/.medusa
+medusa/.env
+docs
+scripts
+**/__pycache__
+*.log
