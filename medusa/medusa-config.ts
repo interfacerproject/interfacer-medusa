@@ -9,6 +9,9 @@ assertDeploymentConfig()
 module.exports = defineConfig({
   projectConfig: {
     databaseUrl: process.env.DATABASE_URL,
+    // Medusa turns on TLS to Postgres in production unless the host is local;
+    // a pilot's Postgres sits on the same private Docker network, without TLS.
+    ...(process.env.DATABASE_SSL === "true" ? {} : { databaseDriverOptions: { connection: { ssl: false } } }),
     http: {
       // /dev uses the same exact GUI origins explicitly (not auto-CORS in v2).
       // A pilot is called server-to-server by the GUI proxy: no browser origin.
