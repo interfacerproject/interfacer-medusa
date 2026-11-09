@@ -4,7 +4,7 @@ import type { MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
-import { requireLocalCommerce } from "./commerce-context"
+import { requireCommerceMode } from "./deployment"
 import { buildReferences, buildRefuse, readBuildQuote } from "./build-purchase"
 import { termsHash } from "./matching"
 import { zenflowsConfig } from "./zenflows-event"
@@ -15,7 +15,7 @@ import { enqueueMilestone, resumeMilestone, runZenflowsSyncSafely, withSync, typ
 // a fabricated native fulfillment/delivery. The immutable receipt IS the local
 // production milestone; insert and idempotency fact are the same DB commit.
 export async function produceBuild(container: MedusaContainer, orderId: string, auth?: unknown) {
-  requireLocalCommerce()
+  requireCommerceMode()
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   return integration.withProjectionLock("interfacer-build-produce:" + orderId, async () => {
     const query = container.resolve(ContainerRegistrationKeys.QUERY)

@@ -16,7 +16,8 @@ const crypto = require("node:crypto")
 const { canonicalOperation } = require("../medusa/src/modules/interfacer/envelope-canonical.ts")
 
 const ROOT = path.resolve(__dirname, "..")
-const STORE = path.join(ROOT, ".tmp/live-actors.json")
+// ZENFLOWS_ACTORS: another key file (e.g. a deployment's service Person).
+const STORE = process.env.ZENFLOWS_ACTORS || path.join(ROOT, ".tmp/live-actors.json")
 const ZENFLOWS = process.env.ZENFLOWS_DIRECT || "http://127.0.0.1:8000/api"
 
 function base58(bytes) {
@@ -69,7 +70,7 @@ async function create(alias) {
   const email = `${user}@market.invalid`
   const publicKey = base58(Buffer.from(jwk.x, "base64url"))
   const data = await gql(`mutation($p: PersonCreateParams!) { createPerson(person: $p) { agent { id } } }`,
-    { p: { name: `Live ${alias}`, user, email, eddsaPublicKey: publicKey } }, undefined, true)
+    { p: { name: process.env.ZENFLOWS_ACTOR_NAME || `Live ${alias}`, user, email, eddsaPublicKey: publicKey } }, undefined, true)
   const entry = { id: data.createPerson.agent.id, user, email, publicKey,
     seed: base58(Buffer.from(jwk.d, "base64url")), pkcs8: privateKey.export({ type: "pkcs8", format: "pem" }) }
   save({ ...load(), [alias]: entry })

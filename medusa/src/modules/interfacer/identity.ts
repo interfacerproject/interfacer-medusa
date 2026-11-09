@@ -1,11 +1,11 @@
 import type { MedusaContainer, ICustomerModuleService } from "@medusajs/framework/types"
 import { MedusaError, Modules } from "@medusajs/framework/utils"
-import { requireLocalCommerce } from "./commerce-context"
+import { requireLocalFixture } from "./deployment"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
 
 export async function bindIdentity(container: MedusaContainer, customerId: unknown, personId: unknown) {
-  requireLocalCommerce()
+  requireLocalFixture()
   if (typeof customerId !== "string" || !customerId.trim() ||
       typeof personId !== "string" || !personId.trim() || personId.length > 1000) {
     throw new MedusaError(MedusaError.Types.INVALID_DATA, "customerId and personId are required")

@@ -5,7 +5,7 @@ import { createProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
 import { verifySignedOperation, type Resource } from "./signed-envelope"
-import { requireLocalCommerce } from "./commerce-context"
+import { requireLocalFixture } from "./deployment"
 
 export interface Passport { ID: string; ProductID: string }
 
@@ -35,7 +35,7 @@ export async function projectResource(
   // Failure injection is in-process only, used by the CLI acceptance test.
   afterProduct?: () => void
 ) {
-  requireLocalCommerce()
+  requireLocalFixture()
   required(resource?.id)
   required(resource?.name)
   required(resource?.primaryAccountable?.id)

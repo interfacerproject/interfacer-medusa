@@ -4,7 +4,8 @@ import { ContainerRegistrationKeys, MedusaError, Modules, ProductStatus } from "
 import { addToCartWorkflow, createProductsWorkflow, updateRegionsWorkflow } from "@medusajs/medusa/core-flows"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
-import { requireLocalCommerce, seedCommerce } from "./commerce-context"
+import { seedCommerce } from "./commerce-context"
+import { requireCommerceMode } from "./deployment"
 import { formBuildQuote, termsHash } from "./matching"
 
 export function buildRefuse(reason: string): never {
@@ -67,7 +68,7 @@ async function offerFor(container: MedusaContainer, quoteId: string) {
 }
 
 export async function acceptBuild(container: MedusaContainer, cartId: string, quoteId: string, customerId: string, auth?: unknown) {
-  requireLocalCommerce()
+  requireCommerceMode()
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   return integration.withProjectionLock("interfacer-build-accept:" + cartId, async () => {
     const carts = container.resolve<ICartModuleService>(Modules.CART)

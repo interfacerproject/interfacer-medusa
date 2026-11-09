@@ -4,6 +4,12 @@ import { decodeBase58 } from "./base58"
 import { resolveLocalPersonPublicKey } from "./local-person-key-resolver"
 import { signatureDenied, verifySignedOperation } from "./signed-envelope"
 import { zenflowsConfig, zenflowsTransport, type ZenflowsConfig } from "./zenflows-event"
+import { pilotMode } from "./deployment"
+import { consumeEnvelopeNonce } from "./envelope-nonces"
+
+// stored: re-checking an authorization persisted when its request arrived (its
+// nonce was consumed then). Every request-borne envelope is consumed once.
+export type VerifyOptions = { stored?: boolean }
 
 export type RegisteredPerson = { id: string; name: string; user: string; publicKey: KeyObject }
 
@@ -39,11 +45,8 @@ export async function readZenflowsPerson(
   return { id, name: person.name, user: person.user, publicKey }
 }
 
-// Remote identities NEVER fall back to caller-supplied or fixture keys on a
-// registry failure. Session creation always takes this path.
-export async function verifyZenflowsOperation(
-  auth: unknown, op: string, params: unknown, person: string,
-  cfg?: ZenflowsConfig, fetchImpl: typeof fetch = fetch,
+async function verifyZenflowsSignature(
+  auth: unknown, op: string, params: unknown, person: string, cfg?: ZenflowsConfig, fetchImpl: typeof fetch = fetch,
 ): Promise<string> {
   try {
     const registered = await readZenflowsPerson(person, cfg, fetchImpl)
@@ -51,16 +54,33 @@ export async function verifyZenflowsOperation(
   } catch { return signatureDenied() }
 }
 
+// Remote identities NEVER fall back to caller-supplied or fixture keys on a
+// registry failure. Session creation always takes this path.
+export async function verifyZenflowsOperation(
+  auth: unknown, op: string, params: unknown, person: string,
+  cfg?: ZenflowsConfig, fetchImpl: typeof fetch = fetch, opts: VerifyOptions = {},
+): Promise<string> {
+  const subject = await verifyZenflowsSignature(auth, op, params, person, cfg, fetchImpl)
+  if (!opts.stored) await consumeEnvelopeNonce(auth)
+  return subject
+}
+
 // Fixture actors remain supported ONLY for the standalone local demo. In live
 // mode (a Zenflows URL is configured) every actor proves the key Zenflows has
 // registered for them; a disposable fixture identity is refused outright.
-export async function verifyCommerceOperation(auth: unknown, op: string, params: unknown, person: string): Promise<string> {
+// A pilot has no fixture keyring at all.
+export async function verifyCommerceOperation(
+  auth: unknown, op: string, params: unknown, person: string, opts: VerifyOptions = {},
+): Promise<string> {
   let fixture: KeyObject | undefined
-  try { fixture = resolveLocalPersonPublicKey(person) } catch { return signatureDenied() }
+  if (!pilotMode()) try { fixture = resolveLocalPersonPublicKey(person) } catch { return signatureDenied() }
   if (fixture && process.env.INTERFACER_ZENFLOWS_URL)
     throw new MedusaError(MedusaError.Types.NOT_ALLOWED, "fixture_identity_forbidden")
+  let subject: string
   try {
-    if (fixture) return verifySignedOperation(auth, op, params, person, fixture)
-    return await verifyZenflowsOperation(auth, op, params, person)
+    subject = fixture ? verifySignedOperation(auth, op, params, person, fixture)
+      : await verifyZenflowsSignature(auth, op, params, person)
   } catch { return signatureDenied() }
+  if (!opts.stored) await consumeEnvelopeNonce(auth)
+  return subject
 }

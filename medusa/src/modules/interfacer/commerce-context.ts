@@ -1,27 +1,37 @@
-// LOCAL DEMO ONLY. No production/customer price authority is provided here.
+// The marketplace's commerce context (EUR region, sales channel, stock location,
+// publishable key, store defaults), created once and then reused. No
+// production/customer price authority is provided here.
 import type {
   MedusaContainer, IRegionModuleService, ISalesChannelModuleService,
   IStockLocationService, IApiKeyModuleService, IStoreModuleService,
 } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
 import {
-  createRegionsWorkflow, createSalesChannelsWorkflow, createStockLocationsWorkflow,
+  createRegionsWorkflow, updateRegionsWorkflow, createSalesChannelsWorkflow, createStockLocationsWorkflow,
   createApiKeysWorkflow, createStoresWorkflow, updateStoresWorkflow,
   linkSalesChannelsToApiKeyWorkflow, linkSalesChannelsToStockLocationWorkflow,
 } from "@medusajs/medusa/core-flows"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
+import { requireCommerceMode } from "./deployment"
 
-export function requireLocalCommerce() {
-  if (process.env.INTERFACER_AUTH_MODE !== "signed-envelope-local" ||
-      process.env.NODE_ENV === "production") throw new Error("local_fixture_mode_required")
-}
-
+// Names are lookup keys for an existing context: keep them stable.
 const NAME = "Interfacer local EUR"
 const KEY_TITLE = "Interfacer local storefront"
+// Where a buyer can ship: the countries the GUI checkout offers.
+export const SHIPPING_COUNTRIES = ["at", "be", "de", "dk", "es", "fi", "fr", "gr", "ie", "it", "nl", "pl", "pt", "se"]
+
+export type CommerceContext = Awaited<ReturnType<typeof seedCommerce>>
+let cached: CommerceContext | undefined
+// The context as callers read it on every request: created on first use, then
+// served from memory (it never changes once created).
+export async function commerceContext(container: MedusaContainer): Promise<CommerceContext> {
+  if (!cached) cached = await seedCommerce(container)
+  return cached
+}
 
 export async function seedCommerce(container: MedusaContainer) {
-  requireLocalCommerce()
+  requireCommerceMode()
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   return integration.withProjectionLock("interfacer-commerce-context-v1", async () => {
     const regions = container.resolve<IRegionModuleService>(Modules.REGION)
@@ -34,11 +44,19 @@ export async function seedCommerce(container: MedusaContainer) {
     let [region] = await regions.listRegions({ name: NAME })
     if (!region) {
       const { result } = await createRegionsWorkflow(container).run({ input: { regions: [{
-        name: NAME, currency_code: "eur", countries: ["de"], automatic_taxes: false,
+        name: NAME, currency_code: "eur", countries: SHIPPING_COUNTRIES, automatic_taxes: false,
       }] } })
       region = result[0]
     }
     if (region.currency_code !== "eur") throw new Error("reconciliation_required: region currency changed")
+    // Older contexts shipped to Germany only: add the missing countries.
+    const { data: [withCountries] } = await query.graph({
+      entity: "region", fields: ["id", "countries.iso_2"], filters: { id: region.id },
+    })
+    const present = new Set<string>((withCountries?.countries ?? []).map((c: { iso_2: string }) => c.iso_2))
+    if (SHIPPING_COUNTRIES.some(c => !present.has(c))) await updateRegionsWorkflow(container).run({
+      input: { selector: { id: region.id }, update: { countries: [...new Set([...present, ...SHIPPING_COUNTRIES])] } },
+    })
     let [channel] = await channels.listSalesChannels({ name: NAME })
     if (!channel) {
       const { result } = await createSalesChannelsWorkflow(container).run({

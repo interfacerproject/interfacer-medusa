@@ -6,14 +6,14 @@ import type InterfacerService from "./service"
 import { buyerChallenges } from "./buyer-challenges"
 import { refuse } from "./checkout-guard"
 import { verifyZenflowsOperation } from "./zenflows-person"
-import { requireLocalCommerce } from "./commerce-context"
+import { requireCommerceMode } from "./deployment"
 import type { SignedOperation } from "./signed-envelope"
 
 // A native Medusa bearer account, enrolled only after proof of the key currently
 // registered to the Person in the configured Zenflows registry. No key, email,
 // customer id or receiver from the request is trusted as identity evidence.
 export async function createBuyerSession(container: MedusaContainer, auth: unknown) {
-  requireLocalCommerce()
+  requireCommerceMode()
   const envelope = (auth as SignedOperation | undefined)?.envelope
   const person = envelope?.person_id
   const params = envelope?.params as { challenge?: unknown } | undefined
