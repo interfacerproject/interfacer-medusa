@@ -7,6 +7,7 @@ import { formBuildQuote, matchServices, parseDesign, parseService, priceCents, t
 import { designs, services } from "./matching-fixtures"
 import { catalogEntryToService, listLiveCatalog } from "./catalog"
 import { liveMode } from "./zenflows-registry"
+import { listedForDesign } from "./build-listing"
 
 const LOCK = "interfacer-build-matching-v1"
 async function all<T>(list: (skip: number) => Promise<T[]>): Promise<T[]> {
@@ -32,8 +33,9 @@ export async function listServices(integration: InterfacerService) {
   return (await all(skip => integration.listServices({}, { skip, take: 100, order: { id: "ASC" } }))).map(serviceData)
 }
 
-// The design to match plus candidate services; live exclusions (resource gone,
-// owner changed) are reported as rejections, never quoted.
+// The design to match plus candidate services. Live: only services whose owner
+// listed this design, at the listed price; listed services that were excluded
+// (resource gone, owner changed) are reported as rejections, never quoted.
 async function matchSource(integration: InterfacerService, designId: string) {
   if (liveMode()) {
     const catalog = await listLiveCatalog(integration)
@@ -43,13 +45,16 @@ async function matchSource(integration: InterfacerService, designId: string) {
       if (excluded) throw new MedusaError(MedusaError.Types.NOT_ALLOWED, excluded.reason)
       throw new MedusaError(MedusaError.Types.NOT_FOUND, "design_not_found")
     }
-    const excluded = catalog.excluded.filter(e => e.kind === "service")
+    const { candidates, listedIds } = await listedForDesign(integration, designId, catalog.services)
+    const excluded = catalog.excluded.filter(e => e.kind === "service" && listedIds.has(e.resource_id))
       .map(e => ({ service: catalogEntryToService(e.entry), reason: e.reason }))
-    return { design, services: catalog.services, excluded }
+    return { design, services: candidates.map(c => c.service), excluded,
+      leadDays: new Map(candidates.map(c => [c.service.id, c.lead_days])) }
   }
   const [row] = await integration.listDesigns({ id: designId })
   if (!row) throw new MedusaError(MedusaError.Types.NOT_FOUND, "design_not_found")
-  return { design: parseDesign(row), services: await listServices(integration), excluded: [] }
+  return { design: parseDesign(row), services: await listServices(integration), excluded: [],
+    leadDays: new Map<string, number>() }
 }
 
 export async function seedMatching(container: MedusaContainer) {
@@ -82,7 +87,7 @@ export async function matchDesign(container: MedusaContainer, designId: string) 
   requireLocalCommerce()
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   return integration.withProjectionLock(LOCK, async () => {
-    const { design, services, excluded } = await matchSource(integration, designId)
+    const { design, services, excluded, leadDays } = await matchSource(integration, designId)
     const result = matchServices(design, services)
     const matches = []
     for (const service of result.matches) {
@@ -93,7 +98,7 @@ export async function matchDesign(container: MedusaContainer, designId: string) 
         throw new Error("quote_integrity_failure")
       }
       const quote = previous ?? await integration.createBuildQuotes(terms)
-      matches.push({ service, quote })
+      matches.push({ service, quote, listing: { lead_days: leadDays.get(service.id) ?? null } })
     }
     return { matches, rejected: [...result.rejected, ...excluded] }
   })

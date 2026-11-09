@@ -29,12 +29,16 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const orders: Record<string, unknown>[] = []
   for (let skip = 0; sold.size; skip += 100) {
     const { data } = await query.graph({ entity: "order", pagination: { skip, take: 100 },
-      fields: ["id", "status", "created_at", "items.variant_id", "payment_collections.payments.captured_at"] })
+      fields: ["id", "status", "created_at", "summary.*", "items.variant_id", "payment_collections.payments.captured_at"] })
     for (const order of data) {
       const ref = order.items?.length === 1 ? sold.get(order.items[0]?.variant_id ?? "") : undefined
       if (!ref) continue
       const captured = order.payment_collections?.some((c: any) => c?.payments?.some((p: any) => p?.captured_at)) ?? false
-      orders.push({ id: order.id, status: order.status, created_at: order.created_at, captured, ...ref })
+      // A build carries its quoted total; a stock sale, what the buyer paid.
+      // (Medusa 2.10's graph `total` is not computed here; the order summary is.)
+      const total_eur = typeof ref.total_eur === "number" ? ref.total_eur
+        : Number((order as any).summary?.current_order_total ?? 0)
+      orders.push({ id: order.id, status: order.status, created_at: order.created_at, captured, ...ref, total_eur })
     }
     if (data.length < 100) break
   }
