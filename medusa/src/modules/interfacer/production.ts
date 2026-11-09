@@ -1,4 +1,5 @@
-import { verifySignedOperation } from "./signed-envelope"
+// Live mode: Zenflows-registered keys only; standalone: fixture keyring.
+import { verifyCommerceOperation } from "./zenflows-person"
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils"
 import { INTERFACER_MODULE } from "./index"
@@ -6,6 +7,9 @@ import type InterfacerService from "./service"
 import { requireLocalCommerce } from "./commerce-context"
 import { buildReferences, buildRefuse, readBuildQuote } from "./build-purchase"
 import { termsHash } from "./matching"
+import { zenflowsConfig } from "./zenflows-event"
+import { readInstance } from "./zenflows-registry"
+import { enqueueMilestone, resumeMilestone, runZenflowsSyncSafely, withSync, type MilestoneInput } from "./zenflows-outbox"
 
 // Explicit admin/supplier "produced" assertion, not a payment subscriber and not
 // a fabricated native fulfillment/delivery. The immutable receipt IS the local
@@ -25,7 +29,7 @@ export async function produceBuild(container: MedusaContainer, orderId: string, 
     const [offer] = await integration.listBuildOffers({ medusa_variant_id: line.variant_id ?? "" })
     if (!offer || offer.medusa_product_id !== line.product_id) buildRefuse("build_offer_required")
     const quote = await readBuildQuote(integration, offer.quote_id)
-    verifySignedOperation(auth, "commerce.order.produce", { order_id: orderId }, quote.provider_person_id)
+    await verifyCommerceOperation(auth, "commerce.order.produce", { order_id: orderId }, quote.provider_person_id)
     const [identity] = await integration.listIdentityLinks({ customer_id: order.customer_id ?? "" })
     const purchase = order.metadata?.interfacer_purchase as Record<string, unknown> | undefined
     const [acceptance] = await integration.listBuildAcceptances({ id: String(purchase?.acceptance_id ?? "") })
@@ -49,15 +53,37 @@ export async function produceBuild(container: MedusaContainer, orderId: string, 
         !payments[0].captured_at || payments[0].canceled_at ||
         Number(payments[0].amount) !== quote.total_price_cents / 100) buildRefuse("build_upfront_payment_required")
     const [previous] = await integration.listReaReceipts({ order_id: orderId })
-    if (previous) return { created: false, receipt: previous }
-    // LOCAL STAND-IN SINK reused from P3. No successor DPP is minted.
-    const receipt = await integration.createReaReceipts({
+    // A retry reuses the persisted milestone time, so its payload hashes identically.
+    const has_point_in_time = previous ? new Date(previous.has_point_in_time) : new Date()
+    // Live: the registered service owner produces and hands over; the produced
+    // lot uses the instance's unitOne unless a unit is configured explicitly.
+    const cfg = zenflowsConfig()
+    if (cfg && identity.zenflows_person_id === quote.provider_person_id) buildRefuse("self_purchase_forbidden")
+    const unit = cfg && !previous ? cfg.unit ?? (await readInstance(cfg)).unitOne : cfg?.unit
+    const milestone: MilestoneInput = {
+      action: "produce", quantity: quote.quantity, has_point_in_time,
+      note: `interfacer-marketplace produce order=${orderId} service=${quote.service_id}`,
+      // A real produced Zenflows resource, tracked to the design.
+      resource_name: `Interfacer build ${quote.design_id}`,
+      resource_tracking_id: quote.design_id,
+      receiver: identity.zenflows_person_id ?? undefined,
+      provider: cfg ? quote.provider_person_id : undefined,
+      unit,
+    }
+    if (previous) return { created: false, ...await resumeMilestone(integration, previous, milestone) }
+    // Durable outbox (see delivery.ts): Process -> produce -> transfer run after
+    // the receipt and its pending sync row have committed together.
+    const { receipt, sync } = await enqueueMilestone(integration, {
       action: "produce", provider_id: quote.provider_person_id, receiver_id: identity.person_id,
       resource_id: quote.design_id, design_id: quote.design_id, service_id: quote.service_id,
       dpp_id: quote.origin_dpp_id!, origin_dpp_id: quote.origin_dpp_id,
       quote_id: quote.id, quote_hash: quote.quote_hash,
-      order_id: orderId, quantity: quote.quantity, has_point_in_time: new Date(),
-    })
-    return { created: true, receipt }
+      order_id: orderId, quantity: quote.quantity, has_point_in_time,
+    }, milestone)
+    // Re-read after commit: the in-transaction DTO lacks DB-committed fields, and
+    // retries/listings must see byte-identical receipts.
+    if (!sync) return { created: true, receipt: await integration.retrieveReaReceipt(receipt.id) }
+    const state = await runZenflowsSyncSafely(integration, sync.id)
+    return { created: true, receipt: withSync(await integration.retrieveReaReceipt(receipt.id), state) }
   })
 }

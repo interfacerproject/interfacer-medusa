@@ -1,4 +1,4 @@
-import { verify } from "node:crypto"
+import { verify, type KeyObject } from "node:crypto"
 import { MedusaError } from "@medusajs/framework/utils"
 import { canonicalOperation } from "./envelope-canonical"
 import { resolveLocalPersonPublicKey } from "./local-person-key-resolver"
@@ -19,7 +19,7 @@ export function authFromHeader(value: unknown): unknown {
   if (typeof value !== "string" || value.length > 100_000 || !/^[A-Za-z0-9_-]+$/.test(value)) return undefined
   try { return JSON.parse(Buffer.from(value, "base64url").toString("utf8")) } catch { return undefined }
 }
-export function verifySignedOperation(auth: unknown, op: string, params: unknown, controller: string): string {
+export function verifySignedOperation(auth: unknown, op: string, params: unknown, controller: string, registeredKey?: KeyObject): string {
   try {
     const a = auth as SignedOperation
     if (!a || Object.keys(a).sort().join(",") !== "envelope,signature") signatureDenied()
@@ -33,7 +33,7 @@ export function verifySignedOperation(auth: unknown, op: string, params: unknown
         canonicalOperation(e.params) !== canonicalOperation(params) ||
         typeof a.signature !== "string" || !/^[A-Za-z0-9+/]{86}==$/.test(a.signature)) signatureDenied()
     const signature = Buffer.from(a.signature, "base64")
-    const key = resolveLocalPersonPublicKey(e.person_id)
+    const key = registeredKey ?? resolveLocalPersonPublicKey(e.person_id)
     if (!key || signature.length !== 64 || signature.toString("base64") !== a.signature ||
         !verify(null, Buffer.from(canonicalOperation(e), "utf8"), key, signature)) signatureDenied()
     return e.person_id

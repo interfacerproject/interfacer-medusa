@@ -96,10 +96,15 @@ def up():
                         time.sleep(1)
                 else:
                     raise RuntimeError("Medusa health timeout")
-                # Client-side bootstrap signs merchant actions with P6a's helper.
                 os.environ.update(env)
-                client.bootstrap()
-                print("\nSTOREFRONT READY: http://localhost:9000/dev/store\nLOCAL DEV SIGNER + manual test payment; REA sink/key resolver are local stand-ins.\nCtrl-C or npm run dev:down to stop. No sold stock is replenished.\n", flush=True)
+                if env.get("INTERFACER_ZENFLOWS_URL"):
+                    # Live: fixture keys are refused; no disposable buyer or listings.
+                    client.bootstrap_live()
+                    print("\nSTOREFRONT READY (LIVE): http://localhost:9000/dev/store\nReal Zenflows sellers/buyers sign with their wallets via the GUI; no dev signer.\nCtrl-C or npm run dev:down to stop.\n", flush=True)
+                else:
+                    # Client-side bootstrap signs merchant actions with P6a's helper.
+                    client.bootstrap()
+                    print("\nSTOREFRONT READY: http://localhost:9000/dev/store\nLOCAL DEV SIGNER + manual test payment; REA sink/key resolver are local stand-ins.\nCtrl-C or npm run dev:down to stop. No sold stock is replenished.\n", flush=True)
                 while proc.poll() is None:
                     time.sleep(0.5)
                 raise RuntimeError("Medusa exited unexpectedly; see .tmp/dev-store-server.log")

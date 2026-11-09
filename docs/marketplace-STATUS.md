@@ -1,4 +1,10 @@
-# Interfacer × Medusa — final local marketplace status
+# Interfacer × Medusa — local marketplace status
+
+**Current extension (2026-10-23):** the GUI now supports verified Interfacer buyer
+wallets and per-order live receivers; live build milestones record a real
+Process/produce before handover. See [the bridge document](zenflows-bridge.md) for
+setup, evidence and explicit limits. The P0–P6b baseline below describes the
+standalone fixture mode and its historical nine-harness acceptance.
 
 **P6b implementation: browser storefront + signed end-to-end journeys.**
 Local development only, not a production marketplace or live Zenflows deployment.
@@ -88,7 +94,7 @@ recovery are not implemented or implied.
 
 ## Verification
 
-**Verified 2026-10-22: `npm run test:all` green, all 9 suites**, including both
+**Re-verified 2026-10-23: `npm run test:all` green, all 9 suites**, including both
 real HTTP receipts and driven Chromium journeys at desktop/mobile widths.
 Both owned P6b databases are stopped and no server/browser process is left running.
 
