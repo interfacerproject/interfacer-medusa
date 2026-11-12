@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 Dyne.org foundation <foundation@dyne.org>.
+#
+# Interfacer marketplace pilot: Medusa and its Postgres. Medusa is published
+# on no public port: the GUI container reaches it as http://medusa:9000 on the
+# shared `interfacer-market` network, and operators over an SSH tunnel on
+# 127.0.0.1:9100. See docs/deploy-pilot.md.
+
+services:
+  medusa:
+    image: ghcr.io/interfacerproject/interfacer-medusa:staging
+    restart: unless-stopped
+    env_file: ./medusa.env
+    depends_on:
+      - db
+    networks:
+      default:
+      market:
+        aliases:
+          - medusa
+    ports:
+      - "127.0.0.1:9100:9000"
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "5"
+        max-size: "15m"
+  db:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    env_file: ./db.env
+    volumes:
+      - medusa_db:/var/lib/postgresql/data
+    logging:
+      driver: "json-file"
+      options:
+        max-file: "5"
+        max-size: "15m"
+
+networks:
+  market:
+    external: true
+    name: interfacer-market
+
+volumes:
+  medusa_db:

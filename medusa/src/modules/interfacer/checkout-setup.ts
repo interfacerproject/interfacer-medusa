@@ -5,12 +5,13 @@ import type { MedusaContainer, IInventoryService } from "@medusajs/framework/typ
 import { ContainerRegistrationKeys, MedusaError, Modules } from "@medusajs/framework/utils"
 import { createInventoryItemsWorkflow, createInventoryLevelsWorkflow, updateProductVariantsWorkflow,
   updateRegionsWorkflow } from "@medusajs/medusa/core-flows"
-import { requireLocalCommerce, seedCommerce } from "./commerce-context"
+import { seedCommerce } from "./commerce-context"
+import { requireCommerceMode } from "./deployment"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
 
 export async function setupCheckout(container: MedusaContainer, listingId: string, auth?: unknown) {
-  requireLocalCommerce()
+  requireCommerceMode()
   const integration = container.resolve<InterfacerService>(INTERFACER_MODULE)
   const [binding] = await integration.listListingBindings({ id: listingId })
   if (!binding) throw new MedusaError(MedusaError.Types.NOT_FOUND, "listing_not_found")

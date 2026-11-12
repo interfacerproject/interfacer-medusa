@@ -6,6 +6,7 @@ import { Modules } from "@medusajs/framework/utils"
 import { allowLocalRequest } from "./dev/interfacer/local-guard"
 import { allowStorefront } from "../storefront/dev"
 import { checkoutEvidence, refuse } from "../modules/interfacer/checkout-guard"
+import { allowMarketRequest, allowMarketStorefront, pilotProxyOnly } from "./market-guard"
 
 import { authFromHeader, AUTH_HEADER, checkoutOperationParams } from "../modules/interfacer/signed-envelope"
 
@@ -33,21 +34,50 @@ async function prepareCheckout(req: MedusaRequest, _res: MedusaResponse, next: M
   } catch (error) { next(error) }
 }
 
+type Guard = (req: MedusaRequest, res: MedusaResponse) => boolean
+const guarded = (allow: Guard) => (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) => {
+  if (allow(req, res)) next()
+}
+const storefront = guarded(allowMarketStorefront)
+
 export default defineMiddlewares({ routes: [{
+  // A pilot is reached only through the GUI proxy, native routes included.
+  matcher: "/store/*", middlewares: [pilotProxyOnly],
+}, {
+  matcher: "/auth/customer/*", middlewares: [pilotProxyOnly],
+}, {
+  matcher: "/market/store/(capture|prepare)", method: "POST",
+  middlewares: [storefront, authenticate("customer", ["session", "bearer"])],
+}, {
+  matcher: "/market/store/zenflows-sync/:id/(next|sign)", method: ["GET", "POST"],
+  middlewares: [storefront, authenticate("customer", ["bearer"])],
+}, {
+  matcher: "/market/store/seller", method: "GET",
+  middlewares: [storefront, authenticate("customer", ["bearer"])],
+}, {
+  matcher: "/market/receipts", method: "GET",
+  middlewares: [storefront, authenticate("customer", ["bearer"])],
+}, {
+  matcher: "/market/zenflows-sync/:id/retry", method: "POST",
+  middlewares: [storefront, authenticate("customer", ["bearer"])],
+}, {
+  matcher: "/market/build-orders", method: "POST",
+  middlewares: [guarded(allowMarketRequest), authenticate("customer", ["session", "bearer"])],
+}, {
   matcher: "/dev/store/(sign|capture|prepare)", method: "POST",
-  middlewares: [(req, res, next) => { if (allowStorefront(req, res)) next() },
+  middlewares: [guarded(allowStorefront),
     authenticate("customer", ["session", "bearer"])],
 }, {
   matcher: "/dev/store/zenflows-sync/:id/(next|sign)", method: ["GET", "POST"],
-  middlewares: [(req, res, next) => { if (allowStorefront(req, res)) next() },
+  middlewares: [guarded(allowStorefront),
     authenticate("customer", ["bearer"])],
 }, {
   matcher: "/dev/store/seller", method: "GET",
-  middlewares: [(req, res, next) => { if (allowStorefront(req, res)) next() },
+  middlewares: [guarded(allowStorefront),
     authenticate("customer", ["bearer"])],
 }, {
   matcher: "/dev/interfacer/build-orders", method: "POST",
-  middlewares: [(req, res, next) => { if (allowLocalRequest(req, res)) next() },
+  middlewares: [guarded(allowLocalRequest),
     authenticate("customer", ["session", "bearer"])],
 }, {
   matcher: "/store/carts/:id/complete",

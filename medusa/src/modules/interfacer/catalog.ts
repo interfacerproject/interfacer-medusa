@@ -6,7 +6,7 @@ import type { MedusaContainer } from "@medusajs/framework/types"
 import { MedusaError } from "@medusajs/framework/utils"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
-import { requireLocalCommerce } from "./commerce-context"
+import { requireCommerceMode } from "./deployment"
 import { parseDesign, parseService, termsHash, type DesignData, type ServiceData } from "./matching"
 import { verifyZenflowsOperation } from "./zenflows-person"
 import { derivedDppReference, liveMode, readInstance, readResource } from "./zenflows-registry"
@@ -65,7 +65,7 @@ export function catalogEntryToService(entry: Entry): ServiceData {
 // The request body IS the signed params; the signer is the envelope's Person,
 // proven against the key Zenflows has registered for them.
 export async function registerCatalogEntry(container: MedusaContainer, kind: CatalogKind, body: unknown, auth: unknown) {
-  requireLocalCommerce()
+  requireCommerceMode()
   if (!liveMode()) refuse("catalog_live_mode_required")
   const envelope = (auth as SignedOperation | undefined)?.envelope
   const person = envelope?.person_id
