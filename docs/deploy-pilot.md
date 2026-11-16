@@ -75,6 +75,8 @@ On the host (paths as on dpp-dev):
 
 ## Operating it
 
+Day-to-day checks, outbox rows, backups and incidents: [pilot-runbook.md](pilot-runbook.md).
+
 - Logs: `docker compose logs -f medusa`.
 - Outbox (Zenflows sync rows that are pending or blocked, oldest first):
   `docker compose exec medusa interfacer-medusa exec ./src/scripts/zenflows-sync-report.js`.
