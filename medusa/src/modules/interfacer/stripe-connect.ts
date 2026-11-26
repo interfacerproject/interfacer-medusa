@@ -1,8 +1,8 @@
-// Stripe Connect for sellers and makers: each one owns an Express connected
-// account, onboarded on Stripe's own hosted pages (identity, bank account,
-// tax details never pass through Interfacer). The platform only creates the
-// account, asks Stripe for onboarding/dashboard links, reads its status and
-// transfers the seller's share of completed sales.
+// Stripe Connect for sellers and makers (direct charges): each one owns a
+// Standard Stripe account, opened on Stripe's own hosted onboarding (identity,
+// bank account and tax details never pass through Interfacer) and managed in
+// their own Stripe dashboard. The platform only creates the account, asks
+// Stripe for onboarding links and reads whether it can take payments.
 import Stripe from "stripe"
 import { paymentSettings } from "./payments"
 
@@ -11,16 +11,12 @@ export type StripeApi = {
   accounts: {
     create(params: Stripe.AccountCreateParams, options?: Stripe.RequestOptions): Promise<Stripe.Account>
     retrieve(id: string): Promise<Stripe.Account>
-    createLoginLink(id: string): Promise<Stripe.LoginLink>
   }
   accountLinks: { create(params: Stripe.AccountLinkCreateParams): Promise<Stripe.AccountLink> }
-  transfers: {
-    create(params: Stripe.TransferCreateParams, options?: Stripe.RequestOptions): Promise<Stripe.Transfer>
-    list(params: Stripe.TransferListParams): Promise<Stripe.ApiList<Stripe.Transfer>>
-    createReversal(id: string, params: Stripe.TransferReversalCreateParams,
-      options?: Stripe.RequestOptions): Promise<Stripe.TransferReversal>
+  paymentIntents: {
+    retrieve(id: string, params?: Stripe.PaymentIntentRetrieveParams,
+      options?: Stripe.RequestOptions): Promise<Stripe.PaymentIntent>
   }
-  paymentIntents: { retrieve(id: string): Promise<Stripe.PaymentIntent> }
 }
 
 let override: StripeApi | undefined
@@ -49,39 +45,33 @@ export function stripeApi(): StripeApi {
 export type ConnectStatus = {
   account_id: string
   details_submitted: boolean
+  charges_enabled: boolean
   payouts_enabled: boolean
-  transfers_active: boolean
-  // Ready to be paid: Stripe accepts transfers to it and can pay them out.
+  // Ready to sell: Stripe lets the account take card payments.
   ready: boolean
   requirements_due: string[]
   disabled_reason: string | null
 }
 
 export function connectStatus(account: Stripe.Account): ConnectStatus {
-  const transfers_active = account.capabilities?.transfers === "active"
   const details_submitted = !!account.details_submitted
-  const payouts_enabled = !!account.payouts_enabled
+  const charges_enabled = !!account.charges_enabled
   return {
-    account_id: account.id, details_submitted, payouts_enabled, transfers_active,
-    ready: details_submitted && payouts_enabled && transfers_active,
+    account_id: account.id, details_submitted, charges_enabled, payouts_enabled: !!account.payouts_enabled,
+    ready: details_submitted && charges_enabled,
     requirements_due: [...(account.requirements?.currently_due ?? []), ...(account.requirements?.past_due ?? [])]
       .filter((v, i, all) => all.indexOf(v) === i).slice(0, 20),
     disabled_reason: account.requirements?.disabled_reason ?? null,
   }
 }
 
-// An Express account the platform controls: Stripe-hosted onboarding and
-// dashboard, the platform pays Stripe's fees and is liable for negative
-// balances (it is the merchant of record), the seller only receives transfers.
+// A Standard account: the seller's own, full Stripe account. They are the
+// merchant of record, pay Stripe's fees, handle disputes and see everything
+// in their own dashboard (https://dashboard.stripe.com).
 export async function createConnectAccount(api: StripeApi, person_id: string, country: string, idempotencyKey: string) {
   return api.accounts.create({
+    type: "standard",
     country: country.toUpperCase(),
-    controller: {
-      fees: { payer: "application" },
-      losses: { payments: "application" },
-      stripe_dashboard: { type: "express" },
-    },
-    capabilities: { transfers: { requested: true } },
     metadata: { interfacer_person_id: person_id },
   }, { idempotencyKey })
 }
@@ -95,17 +85,4 @@ export async function onboardingLink(api: StripeApi, account_id: string, gui_url
   return link.url
 }
 
-// The seller's own Stripe Express dashboard (bank account, payouts, tax forms).
-export async function dashboardLink(api: StripeApi, account_id: string): Promise<string> {
-  return (await api.accounts.createLoginLink(account_id)).url
-}
-
-// The charge a captured PaymentIntent produced: transfers are tied to it
-// (source_transaction), so they never wait on, or draw from, other funds.
-export async function chargeOf(api: StripeApi, payment_intent_id: string, stored?: unknown): Promise<string> {
-  if (typeof stored === "string" && /^(ch|py)_[A-Za-z0-9]+$/.test(stored)) return stored
-  const intent = await api.paymentIntents.retrieve(payment_intent_id)
-  const charge = typeof intent.latest_charge === "string" ? intent.latest_charge : intent.latest_charge?.id
-  if (intent.status !== "succeeded" || !charge) throw new Error("stripe_charge_not_settled")
-  return charge
-}
+export const STRIPE_DASHBOARD_URL = "https://dashboard.stripe.com/"

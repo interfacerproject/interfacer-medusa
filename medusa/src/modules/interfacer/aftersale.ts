@@ -6,9 +6,10 @@
 // - seller: accept or reject a case; confirm a returned item arrived and
 //           refund it (full or partial); refund an order of theirs at will.
 // The physical-return fact (returned_at, signed by the seller) and the
-// financial refund are separate rows. Every refund also takes the seller's
-// proportional share back: from the pending payout, or, when it was already
-// transferred, by reversing that part of the Stripe transfer.
+// financial refund are separate rows. With Stripe direct charges the refund is
+// made on the seller's account and Stripe gives Interfacer's commission back
+// in proportion; a cancellation before delivery only releases the buyer's
+// authorization (nothing was charged).
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { MedusaError } from "@medusajs/framework/utils"
 import { dirname, join } from "node:path"
@@ -17,10 +18,9 @@ import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
 import { verifyCommerceOperation } from "./zenflows-person"
 import { requireCommerceMode } from "./deployment"
-import { addDays, paymentSettings, sellerShareOfRefunds, toCents } from "./payments"
-import { stripeApi } from "./stripe-connect"
+import { addDays, paymentSettings, toCents } from "./payments"
 import {
-  buyerOfOrder, orderPayment, publicPayout, readPaidOrder, refundedCents, refuse, sellerOfOrder, type PaidOrder,
+  buyerOfOrder, orderPayment, paymentHeld, readPaidOrder, refundedCents, refuse, sellerOfOrder, type PaidOrder,
 } from "./settlement"
 
 export type CaseKind = "cancellation" | "return"
@@ -49,6 +49,8 @@ const ID = /^[A-Za-z0-9_]{1,80}$/
 
 export type OrderFacts = {
   canceled: boolean
+  // Captured, or authorized and waiting for the delivery (Stripe stock).
+  paid: boolean
   captured: boolean
   paid_cents: number
   refunded_cents: number
@@ -60,7 +62,7 @@ export type OrderFacts = {
 export function caseEligibility(kind: CaseKind, facts: OrderFacts, return_window_days: number, now = new Date()):
   { ok: true } | { ok: false; reason: string } {
   if (facts.canceled) return { ok: false, reason: "order_canceled" }
-  if (!facts.captured) return { ok: false, reason: "captured_payment_required" }
+  if (!facts.paid) return { ok: false, reason: "captured_payment_required" }
   if (facts.refunded_cents >= facts.paid_cents) return { ok: false, reason: "order_fully_refunded" }
   if (facts.open_case) return { ok: false, reason: "aftersale_case_open" }
   if (kind === "cancellation" && facts.milestone_at) return { ok: false, reason: "cancellation_after_handover" }
@@ -118,6 +120,7 @@ async function factsOf(container: MedusaContainer, order: PaidOrder) {
     payment, receipt, cases,
     facts: {
       canceled: order.status === "canceled",
+      paid: paymentHeld(payment),
       captured: !!payment.captured_at && !payment.canceled_at,
       paid_cents: toCents(payment.amount),
       refunded_cents: refundedCents(payment),
@@ -198,13 +201,18 @@ export async function respondCase(container: MedusaContainer, orderId: string, c
     await integration.updateAfterSaleCases({ id: row.id, status, seller_note: p.note.trim() || null,
       responded_at: now, ...(status === "rejected" ? { closed_at: now } : {}) } as any)
     // An accepted cancellation is carried out at once: the order is canceled
-    // natively (its unit is free again) and the buyer refunded in full.
+    // natively (its unit is free again). A captured payment (a build) is
+    // refunded in full; an authorization (stock before delivery) is released.
     if (row.kind === "cancellation" && status === "accepted") {
       const order = await readPaidOrder(container, orderId)
       const { facts } = await factsOf(container, order)
-      const refund = await integration.createRefunds({ order_id: orderId, case_id: row.id,
-        amount_cents: facts.paid_cents - facts.refunded_cents, reason: "cancellation", requested_by: person } as any)
-      await carryOutRefund(container, refund.id, { cancel: true, actor: person })
+      if (facts.captured) {
+        const refund = await integration.createRefunds({ order_id: orderId, case_id: row.id,
+          amount_cents: facts.paid_cents - facts.refunded_cents, reason: "cancellation", requested_by: person } as any)
+        await carryOutRefund(container, refund.id, { cancel: true, actor: person })
+      } else if (order.status !== "canceled") {
+        await cancelOrderWorkflow(container).run({ input: { order_id: orderId, canceled_by: person } })
+      }
       await integration.updateAfterSaleCases({ id: row.id, status: nextCaseStatus(row.kind, status, "refunded"),
         closed_at: new Date() } as any)
     }
@@ -273,8 +281,8 @@ export async function carryOutRefund(container: MedusaContainer, refundId: strin
   const refund = await integration.retrieveRefund(refundId) as any
   if (refund.status === "done") return refund
   try {
-    let order = await readPaidOrder(container, refund.order_id)
-    let payment = orderPayment(order)
+    const order = await readPaidOrder(container, refund.order_id)
+    const payment = orderPayment(order)
     const already = (payment.refunds ?? []).some(r => r.note === refundNote(refund.id))
     if (opts.cancel) {
       // Native cancel: refunds every captured payment, cancels uncaptured ones
@@ -293,41 +301,13 @@ export async function carryOutRefund(container: MedusaContainer, refundId: strin
       await refundPaymentWorkflow(container).run({ input: {
         payment_id: payment.id, amount, created_by: opts.actor, note: refundNote(refund.id) } as any })
     }
-    order = await readPaidOrder(container, refund.order_id)
-    payment = orderPayment(order)
-    const reversal = await takeBackSellerShare(container, refund, refundedCents(payment), order.status === "canceled")
-    await integration.updateRefunds({ id: refund.id, status: "done", last_error: null, ...reversal } as any)
+    await integration.updateRefunds({ id: refund.id, status: "done", last_error: null } as any)
   } catch (error) {
     await integration.updateRefunds({ id: refund.id,
       last_error: String((error as Error)?.message ?? error).slice(0, 500) } as any)
     throw error
   }
   return integration.retrieveRefund(refundId)
-}
-
-// The seller's share of what was refunded so far comes back to the platform:
-// a held payout shrinks (or is canceled), a transferred one is partly reversed.
-async function takeBackSellerShare(container: MedusaContainer, refund: { id: string; order_id: string },
-  refunded_total_cents: number, canceled: boolean) {
-  const integration = integrationOf(container)
-  const [payout] = await integration.listPayouts({ order_id: refund.order_id }) as any[]
-  if (!payout) return {}
-  if (payout.status === "held" || payout.status === "blocked") {
-    if (canceled || refunded_total_cents >= payout.gross_cents)
-      await integration.updatePayouts({ id: payout.id, status: "canceled" } as any)
-    return {}
-  }
-  if (payout.status !== "transferred") return {}
-  // Seller's share of all refunds, minus what pre-transfer refunds already kept back.
-  const share = sellerShareOfRefunds(payout, Math.min(refunded_total_cents, payout.gross_cents))
-  const target = Math.min(payout.transferred_cents, Math.max(0, share - (payout.net_cents - payout.transferred_cents)))
-  const delta = target - payout.reversed_cents
-  if (delta <= 0) return {}
-  const reversal = await stripeApi().transfers.createReversal(payout.transfer_id, {
-    amount: delta, metadata: { interfacer_refund_id: refund.id, interfacer_order_id: refund.order_id },
-  }, { idempotencyKey: "interfacer-refund-reversal:" + refund.id })
-  await integration.updatePayouts({ id: payout.id, reversed_cents: payout.reversed_cents + reversal.amount } as any)
-  return { reversal_cents: reversal.amount, reversal_id: reversal.id }
 }
 
 // Job: finish refunds an earlier attempt left pending (crash, Stripe outage).
@@ -354,7 +334,7 @@ export async function resumePendingRefunds(container: MedusaContainer, now = new
 // ---- reads ----
 
 // What the buyer or the seller of an order may see about its after-sale:
-// cases, refunds, what they can do now; the seller also sees their payout.
+// cases, refunds and what they can do now.
 export async function aftersaleView(container: MedusaContainer, orderId: string, person: string) {
   if (!ID.test(orderId)) invalid("invalid_aftersale_params")
   const order = await readPaidOrder(container, orderId)
@@ -365,13 +345,14 @@ export async function aftersaleView(container: MedusaContainer, orderId: string,
   const { facts, cases } = await factsOf(container, order)
   const refunds = await integration.listRefunds({ order_id: orderId }, { order: { created_at: "ASC" } })
   const s = paymentSettings()
-  const [payout] = role === "seller" ? await integration.listPayouts({ order_id: orderId }) : []
   const allowed = (kind: CaseKind) => caseEligibility(kind, facts, s.return_window_days)
   return {
     order_id: orderId, role, kind: who.kind, provider: payment_provider(order),
     // The other party, so the GUI can notify them through the Interfacer inbox.
     counterpart_person_id: role === "buyer" ? who.seller : who.buyer,
     paid_cents: facts.paid_cents, refunded_cents: facts.refunded_cents, canceled: facts.canceled,
+    // Stripe stock orders are charged at delivery; until then only authorized.
+    captured: facts.captured,
     milestone_at: facts.milestone_at,
     return_until: facts.milestone_at ? addDays(facts.milestone_at, s.return_window_days) : null,
     can: role === "buyer"
@@ -380,8 +361,7 @@ export async function aftersaleView(container: MedusaContainer, orderId: string,
     cases: cases.map(c => ({ id: c.id, kind: c.kind, status: c.status, reason: c.reason, seller_note: c.seller_note,
       created_at: c.created_at, responded_at: c.responded_at, returned_at: c.returned_at, closed_at: c.closed_at })),
     refunds: refunds.map((r: any) => ({ id: r.id, case_id: r.case_id, amount_cents: r.amount_cents, reason: r.reason,
-      status: r.status, created_at: r.created_at, ...(role === "seller" ? { reversal_cents: r.reversal_cents } : {}) })),
-    ...(role === "seller" ? { payout: payout ? publicPayout(payout) : null } : {}),
+      status: r.status, created_at: r.created_at })),
   }
 }
 

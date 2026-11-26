@@ -30,15 +30,12 @@ module.exports = defineConfig({
   admin: { disable: process.env.MEDUSA_ADMIN !== "true" },
   modules: [
     { resolve: "./src/modules/interfacer" },
-    // Stripe (Connect): the buyer pays the platform, sellers are paid out later.
-    // Authorize at checkout, capture once the order exists: a refused order
-    // never leaves a captured payment behind (its authorization is released).
+    // Stripe Connect direct charges: the buyer pays the seller's own account,
+    // Interfacer's commission is an application fee (src/modules/stripe-payment).
     ...(stripe ? [{
       resolve: "@medusajs/medusa/payment",
       options: { providers: [{ resolve: "./src/modules/stripe-payment", id: "stripe", options: {
         apiKey: stripe.secret_key, webhookSecret: stripe.webhook_secret,
-        capture: false, automaticPaymentMethods: true,
-        paymentDescription: "Interfacer marketplace order",
         ...(stripe.api_base ? { apiBase: stripe.api_base } : {}),
       } }] },
     }] : []),

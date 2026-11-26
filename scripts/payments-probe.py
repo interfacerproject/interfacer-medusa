@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Release 4ku.1/4ku.2 end-to-end probe: Stripe Connect payments, platform
-commission, payouts, cancellations, returns and refunds, through a REAL Medusa
-on a REAL Postgres, with Stripe replaced by the local stand-in
-(scripts/stripe-stub.cjs). Standalone fixture mode: the seller and the maker are
+"""Release 4ku.1/4ku.2 end-to-end probe: Stripe Connect DIRECT CHARGES (the buyer
+pays the seller's own account, Interfacer's commission is an application fee),
+capture at delivery, cancellations, returns, refunds and lapsed authorizations,
+through a REAL Medusa on a REAL Postgres, with Stripe replaced by the local
+stand-in (scripts/stripe-stub.cjs). Standalone fixture mode: the seller and the maker are
 fixture identities, the dev signer signs their milestones.
 
 DB: Docker (as the other probes) unless PAYMENTS_PROBE_DB=external, in which case
@@ -53,49 +54,50 @@ def refused(fn, reason):
     raise AssertionError(f"expected refusal {reason}")
 
 
-def money_report(env):
-    out = subprocess.check_output(["./node_modules/.bin/medusa", "exec", "./src/scripts/money-report.ts"],
-                                  cwd=ROOT / "medusa", env=env, text=True, stderr=subprocess.STDOUT)
+def money_report(env, *args):
+    done = subprocess.run(["./node_modules/.bin/medusa", "exec", "./src/scripts/money-report.ts", *args],
+                          cwd=ROOT / "medusa", env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    out = done.stdout
+    assert done.returncode == 0, out[-3000:]
     line = next(l for l in out.splitlines() if l.startswith('{"refunds_resumed"'))
     print("  money-report " + line, flush=True)
     return json.loads(line)
 
 
+def stub_post(path, body, account=None):
+    headers = {"Authorization": "Bearer sk_test_stub"}
+    if account:
+        headers["Stripe-Account"] = account
+    req = urllib.request.Request(STUB + path, method="POST", data=body.encode(), headers=headers)
+    with urllib.request.urlopen(req, timeout=10) as res:
+        return json.loads(res.read())
+
+
 class StripeBuyer(c.Buyer):
     def pay(self, cid):
-        """Native payment session through Stripe, then what Stripe.js does when
-        the buyer confirms the Payment Element (authorization only)."""
-        pc = self.call("/store/payment-collections", {"cart_id": cid})["payment_collection"]
-        pc = self.call(f"/store/payment-collections/{pc['id']}/payment-sessions", {"provider_id": "pp_stripe_stripe"})["payment_collection"]
-        session = pc["payment_sessions"][0]
-        assert session["provider_id"] == "pp_stripe_stripe"
-        pi = session["data"]["id"]
-        assert session["data"]["client_secret"].startswith(pi + "_secret_")
-        assert session["data"]["capture_method"] == "manual"
-        return pi
+        """The marketplace's payment route: a PaymentIntent on the seller's account."""
+        session = self.call("/market/store/payment", {"cartId": cid})
+        assert session["provider_id"] == "pp_stripe_stripe" and session["stripe_account"].startswith("acct_"), session
+        pi = session["client_secret"].split("_secret_")[0]
+        return pi, session["stripe_account"]
 
-    def confirm(self, pi):
-        req = urllib.request.Request(f"{STUB}/v1/payment_intents/{pi}/confirm", method="POST",
-                                     data=b"payment_method=pm_card_visa",
-                                     headers={"Authorization": "Bearer sk_test_stub"})
-        with urllib.request.urlopen(req, timeout=10) as res:
-            assert json.loads(res.read())["status"] == "requires_capture"
+    def confirm(self, pi, account):
+        """What Stripe.js (initialized with the seller's account) does on confirm."""
+        assert stub_post(f"/v1/payment_intents/{pi}/confirm", "payment_method=pm_card_visa", account)["status"] == "requires_capture"
 
-    def complete_signed(self, cid, expect_order=True):
+    def complete_signed(self, cid):
         result = self.signed(f"/store/carts/{cid}/complete?" + urlencode({"fields": c.ORDER_FIELDS}), {},
                              {"action": "checkout", "cartId": cid})
-        if not expect_order:
-            return result
         assert result["type"] == "order", json.dumps(result.get("error"))
         return result["order"]
 
     def buy(self, product):
         cid = self.cart()
         self.call(f"/store/carts/{cid}/line-items", {"variant_id": product["variant_id"], "quantity": 1})
-        pi = self.pay(cid)
-        self.confirm(pi)
+        pi, account = self.pay(cid)
+        self.confirm(pi, account)
         order = self.complete_signed(cid)
-        self.capture(order)
+        assert self.capture(order)["captured"] is False  # stock: charged at delivery
         return order, pi
 
 
@@ -166,74 +168,83 @@ def main():
             subprocess.run(["bash", "scripts/spike.sh", "stop"], cwd=ROOT, env=env)
 
 
+def intent(pi):
+    return stub("/__test/state")["payment_intents"][pi]
+
+
+def fees_on(account):
+    return [f for f in stub("/__test/state")["application_fees"].values() if f["account"] == account]
+
+
 def run(env):
     scene = c.bootstrap()
     config = c.request("/market/store/config")
-    assert config["payments"]["provider"] == "stripe", config["payments"]
-    assert config["payments"]["provider_id"] == "pp_stripe_stripe"
-    assert config["payments"]["publishable_key"] == "pk_test_stub"
-    assert config["payments"]["terms"] == TERMS
-    assert "secret" not in json.dumps(config["payments"]).lower()
+    pay = config["payments"]
+    assert pay["provider"] == "stripe" and pay["provider_id"] == "pp_stripe_stripe", pay
+    assert pay["charges"] == "direct" and pay["capture"] == {"stock": "delivery", "build": "order"}
+    assert pay["publishable_key"] == "pk_test_stub" and pay["terms"] == TERMS
+    assert "secret" not in json.dumps(pay).lower()
     buyer = StripeBuyer(scene)
     unit1, unit2, unit3 = scene["products"]
+    buyer_id = scene["buyer_person_id"]
 
     print("1. a seller who cannot be paid yet: refused before the buyer authorizes anything", flush=True)
     cid = buyer.cart()
     buyer.call(f"/store/carts/{cid}/line-items", {"variant_id": unit1["variant_id"], "quantity": 1})
     refused(lambda: buyer.call("/dev/store/sign", {"action": "checkout", "cartId": cid}), "seller_payouts_not_ready")
-    # Medusa lets a client open a session with any registered provider; the
-    # completion hook is what keeps a test (system) payment from placing an order.
+    refused(lambda: buyer.call("/market/store/payment", {"cartId": cid}), "seller_payouts_not_ready")
+    # A client may not open a Stripe session itself (account and fee are the server's).
     pc = buyer.call("/store/payment-collections", {"cart_id": cid})["payment_collection"]
+    refused(lambda: buyer.call(f"/store/payment-collections/{pc['id']}/payment-sessions",
+                               {"provider_id": "pp_stripe_stripe", "data": {"interfacer_direct": {
+                                   "stripe_account": "acct_attacker", "application_fee_amount": 0, "order_reference": cid}}}),
+            "use_market_payment_route")
+    # A test (system) session is possible natively, but can never place an order.
     buyer.call(f"/store/payment-collections/{pc['id']}/payment-sessions", {"provider_id": "pp_system_default"})
     system_cart = cid
 
-    print("2. seller onboarding: signs the commission in force, gets a Stripe link", flush=True)
+    print("2. seller onboarding: signs the commission in force, gets their own Standard Stripe account", flush=True)
     refused(lambda: signed("/market/store/payouts/onboard", {"country": "IT", **TERMS, "fee_bps": 500},
                            "commerce.payouts.onboard", SELLER), "seller_terms_outdated")
-    refused(lambda: c.request("/market/store/payouts/onboard", {"country": "IT", **TERMS}, expected=200), "invalid_payout_onboarding")
+    refused(lambda: c.request("/market/store/payouts/onboard", {"country": "IT", **TERMS}), "invalid_payout_onboarding")
     first = signed("/market/store/payouts/onboard", {"country": "IT", **TERMS}, "commerce.payouts.onboard", SELLER)
     assert first["onboarding_url"].startswith("https://connect.stripe.test/setup/acct_"), first
     assert not first["status"]["ready"] and "external_account" in first["status"]["requirements_due"]
+    account = first["account_id"]
+    assert stub("/__test/state")["accounts"][account]["type"] == "standard"
     again = signed("/market/store/payouts/onboard", {"country": "IT", **TERMS}, "commerce.payouts.onboard", SELLER)
-    assert again["account_id"] == first["account_id"]  # one account per person
+    assert again["account_id"] == account  # one account per person
     refused(lambda: signed("/market/store/payouts/onboard", {"country": "DE", **TERMS}, "commerce.payouts.onboard", SELLER),
             "payout_country_fixed")
-    refused(lambda: buyer.call("/dev/store/sign", {"action": "checkout", "cartId": cid}), "seller_payouts_not_ready")
-    stub(f"/__test/accounts/{first['account_id']}/complete", {})
+    stub(f"/__test/accounts/{account}/complete", {})
     ready = signed("/market/store/payouts/onboard", {"country": "IT", **TERMS}, "commerce.payouts.onboard", SELLER)
     assert ready["status"]["ready"] and ready["onboarding_url"] is None, ready
-    dash = signed("/market/store/payouts/dashboard", {}, "commerce.payouts.dashboard", SELLER)
-    assert dash["url"] == f"https://connect.stripe.test/express/{first['account_id']}"
-    account = first["account_id"]
 
-    print("3. stock sale: authorize, place, capture; terms frozen on the order", flush=True)
-    refused(lambda: buyer.complete_signed(system_cart), "payment_provider_not_allowed")
-    pi = buyer.pay(cid)
-    # Nothing confirmed with Stripe yet: refused before Medusa reserves the
-    # unit (its failed-authorization path would leave the unit reserved).
+    print("3. stock sale: the buyer authorizes a payment on the SELLER's account; nothing is charged yet", flush=True)
+    # No Stripe payment on the cart: refused before the workflow (the completion
+    # hook would refuse the system session too: payment_provider_not_allowed).
+    refused(lambda: buyer.complete_signed(system_cart), "payment_not_authorized")
+    pi, on = buyer.pay(cid)
+    assert on == account
+    assert intent(pi)["account"] == account and intent(pi)["application_fee_amount"] == 160
+    assert intent(pi)["capture_method"] == "manual" and intent(pi)["amount"] == 1995
+    assert buyer.pay(cid) == (pi, account)  # the same session is reused, not replaced
     refused(lambda: buyer.complete_signed(cid), "payment_not_authorized")
-    buyer.confirm(pi)
+    assert db_reserved(unit1) == 0  # refused before Medusa reserved anything (interfacer-medusa#5)
+    buyer.confirm(pi, account)
     order1 = buyer.complete_signed(cid)
-    assert db_reserved(unit1) == 1  # the sold unit, nothing leaked
     assert order1["metadata"]["interfacer_settlement"] == {"seller_person_id": SELLER, "stripe_account_id": account, **TERMS}
-    assert stub("/__test/state")["payment_intents"][pi]["status"] == "requires_capture"
-    buyer.capture(order1)
-    state = stub("/__test/state")
-    assert state["payment_intents"][pi]["status"] == "succeeded" and state["payment_intents"][pi]["amount"] == 1995
-    buyer.capture(order1)  # idempotent
-    assert money_report(env)["payouts_created"] == 0  # paid is not delivered: nothing to pay out yet
+    assert db_reserved(unit1) == 1
+    assert buyer.capture(order1)["captured"] is False
+    assert intent(pi)["status"] == "requires_capture" and not fees_on(account)
 
-    print("4. delivery makes the sale complete: payout of 19.95 - 8% = 18.35 to the seller", flush=True)
+    print("4. delivery charges the buyer: 19.95 to the seller's account, 1.60 commission to Interfacer", flush=True)
     buyer.signed(f"/market/orders/{order1['id']}/deliver", {}, {"action": "deliver", "orderId": order1["id"]})
-    report = money_report(env)
-    assert report["payouts_transferred"] == 1, report
-    transfers = [t for t in stub("/__test/state")["transfers"].values() if t["transfer_group"] == order1["id"]]
-    assert len(transfers) == 1 and transfers[0]["amount"] == 1835 and transfers[0]["destination"] == account
-    assert transfers[0]["source_transaction"] == stub("/__test/state")["payment_intents"][pi]["latest_charge"]
-    assert money_report(env)["payouts_transferred"] == 0  # never twice
+    assert intent(pi)["status"] == "succeeded"
+    assert [f["amount"] for f in fees_on(account)] == [160]
+    assert stub("/__test/state")["accounts"][account]["balance"] == 1835
 
-    print("5. return within the window: request, accept, item back, refund; seller share reversed", flush=True)
-    buyer_id = scene["buyer_person_id"]
+    print("5. return within the window: request, accept, item back, refund; the commission goes back too", flush=True)
     view = buyer.call(f"/market/orders/{order1['id']}/aftersale")
     assert view["role"] == "buyer" and view["can"]["return"] == {"ok": True}, view
     assert view["can"]["cancellation"] == {"ok": False, "reason": "cancellation_after_handover"}
@@ -254,38 +265,39 @@ def run(env):
             "refund_exceeds_payment")
     done = signed(base + "/returned", {**returned, "refund_cents": 1995}, "commerce.order.case.returned", SELLER)["case"]
     assert done["status"] == "refunded" and done["returned_at"], done
-    state = stub("/__test/state")
-    refunds = [r for r in state["refunds"].values() if r["payment_intent"] == pi]
-    assert [r["amount"] for r in refunds] == [1995], refunds
-    t = state["transfers"][transfers[0]["id"]]
-    assert t["amount_reversed"] == 1835 and t["reversed"], t
+    refunds = [r for r in stub("/__test/state")["refunds"].values() if r["payment_intent"] == pi]
+    assert [(r["amount"], r["account"], r["application_fee_refunded"]) for r in refunds] == [(1995, account, 160)], refunds
+    assert stub("/__test/state")["accounts"][account]["balance"] == 0
     view = buyer.call(f"/market/orders/{order1['id']}/aftersale")
     assert view["refunded_cents"] == 1995 and view["refunds"][0]["status"] == "done", view
-    assert "reversal_cents" not in view["refunds"][0]  # the seller's books are not the buyer's business
     assert view["can"]["return"] == {"ok": False, "reason": "order_fully_refunded"}
 
-    print("6. cancellation before delivery: the seller must answer first; accepting cancels and refunds", flush=True)
+    print("6. cancellation before delivery: the authorization is released, nothing is charged, the unit is free", flush=True)
     order2, pi2 = buyer.buy(unit2)
     cancel = {"order_id": order2["id"], "kind": "cancellation", "reason": "Ordered by mistake"}
     case2 = signed(f"/market/orders/{order2['id']}/cases", cancel, "commerce.order.case.open", buyer_id, 201)["case"]
     refused(lambda: buyer.signed(f"/market/orders/{order2['id']}/deliver", {}, {"action": "deliver", "orderId": order2["id"]}),
             "aftersale_cancellation_pending")
-    rejected_needs_note = {"order_id": order2["id"], "case_id": case2["id"], "decision": "reject", "note": " "}
-    refused(lambda: signed(f"/market/orders/{order2['id']}/cases/{case2['id']}/respond", rejected_needs_note,
+    assert intent(pi2)["status"] == "requires_capture"  # the refused delivery charged nothing
+    refused(lambda: signed(f"/market/orders/{order2['id']}/cases/{case2['id']}/respond",
+                           {"order_id": order2["id"], "case_id": case2["id"], "decision": "reject", "note": " "},
                            "commerce.order.case.respond", SELLER), "aftersale_reject_reason_required")
     accepted = signed(f"/market/orders/{order2['id']}/cases/{case2['id']}/respond",
                       {"order_id": order2["id"], "case_id": case2["id"], "decision": "accept", "note": ""},
                       "commerce.order.case.respond", SELLER)["case"]
     assert accepted["status"] == "refunded", accepted
     assert buyer.order(order2["id"])["status"] == "canceled"
-    assert [r["amount"] for r in stub("/__test/state")["refunds"].values() if r["payment_intent"] == pi2] == [1995]
-    assert db_reserved(unit2) == 0  # the reservation is released: the unit is for sale again
+    assert intent(pi2)["status"] == "canceled"
+    assert not [r for r in stub("/__test/state")["refunds"].values() if r["payment_intent"] == pi2]
+    assert db_reserved(unit2) == 0
     refused(lambda: buyer.signed(f"/market/orders/{order2['id']}/deliver", {}, {"action": "deliver", "orderId": order2["id"]}),
             "demo_order_required")  # nothing to sign for a canceled order
-    assert not [t for t in stub("/__test/state")["transfers"].values() if t["transfer_group"] == order2["id"]]
 
-    print("7. a goodwill partial refund before the payout shrinks the seller's transfer", flush=True)
+    print("7. a goodwill partial refund after delivery: 5.00 back, 0.40 of the commission with it", flush=True)
     order3, pi3 = buyer.buy(unit3)
+    refused(lambda: signed(f"/market/orders/{order3['id']}/refunds",
+                           {"order_id": order3["id"], "amount_cents": 500, "reason": "x"}, "commerce.order.refund", SELLER, 201),
+            "captured_payment_required")  # not charged before delivery: cancel instead
     buyer.signed(f"/market/orders/{order3['id']}/deliver", {}, {"action": "deliver", "orderId": order3["id"]})
     refund = signed(f"/market/orders/{order3['id']}/refunds",
                     {"order_id": order3["id"], "amount_cents": 500, "reason": "Scratch on the side"},
@@ -294,13 +306,12 @@ def run(env):
     refused(lambda: signed(f"/market/orders/{order3['id']}/refunds",
                            {"order_id": order3["id"], "amount_cents": 500, "reason": "x"}, "commerce.order.refund", buyer_id, 201),
             "seller_order_required")
-    assert money_report(env)["payouts_transferred"] == 1
-    t3 = [t for t in stub("/__test/state")["transfers"].values() if t["transfer_group"] == order3["id"]]
-    assert [t["amount"] for t in t3] == [1835 - 460], t3
+    r3 = [r for r in stub("/__test/state")["refunds"].values() if r["payment_intent"] == pi3]
+    assert [(r["amount"], r["application_fee_refunded"]) for r in r3] == [(500, 40)], r3
 
-    print("8. build: the maker onboards, the buyer pays the quote, production pays the maker", flush=True)
-    design = buyer.call("/market/designs")["designs"]
-    design = next(d for d in design if d["id"] == "ifdes_p4_organizer")
+    print("8. build: the maker onboards; the quote is charged as soon as the order exists", flush=True)
+    designs = buyer.call("/market/designs")["designs"]
+    design = next(d for d in designs if d["id"] == "ifdes_p4_organizer")
     quote = buyer.call("/market/match", {"designId": design["id"]})["matches"][0]["quote"]
     assert quote["provider_person_id"] == MAKER and quote["total_price_cents"] == 1900
     cid = buyer.cart()
@@ -308,25 +319,34 @@ def run(env):
     maker = signed("/market/store/payouts/onboard", {"country": "DE", **TERMS}, "commerce.payouts.onboard", MAKER)
     stub(f"/__test/accounts/{maker['account_id']}/complete", {})
     buyer.signed("/market/build-orders", {"cartId": cid, "quoteId": quote["id"]}, {"action": "build", "cartId": cid, "quoteId": quote["id"]})
-    pi4 = buyer.pay(cid)
-    buyer.confirm(pi4)
+    pi4, on4 = buyer.pay(cid)
+    assert on4 == maker["account_id"] and intent(pi4)["application_fee_amount"] == 152
+    buyer.confirm(pi4, on4)
     build = buyer.complete_signed(cid)
-    buyer.capture(build)
+    assert buyer.capture(build)["captured"] is True and intent(pi4)["status"] == "succeeded"
     receipt = buyer.signed(f"/market/build-orders/{build['id']}/produce", {}, {"action": "produce", "orderId": build["id"]})["receipt"]
     assert receipt["action"] == "produce"
-    assert money_report(env)["payouts_transferred"] == 1
-    t4 = [t for t in stub("/__test/state")["transfers"].values() if t["transfer_group"] == build["id"]]
-    assert [(t["amount"], t["destination"]) for t in t4] == [(1900 - 152, maker["account_id"])], t4
+    assert [f["amount"] for f in fees_on(maker["account_id"])] == [152]
 
-    totals = stub("/__test/state")
-    captured = sum(p["amount_received"] for p in totals["payment_intents"].values())
-    refunded = sum(r["amount"] for r in totals["refunds"].values())
-    paid_out = sum(t["amount"] - t["amount_reversed"] for t in totals["transfers"].values())
-    print(f"  platform: captured {captured}, refunded {refunded}, paid to sellers {paid_out}, kept {captured - refunded - paid_out} (cents)")
-    # Kept = commission on what was not refunded: order3 160 - 40 + build 152.
-    assert captured - refunded - paid_out == (160 - 40) + 152
-    print("PASS payments: Stripe Connect onboarding + signed terms, authorize/capture, payouts net of commission after the "
-          "milestone, return/cancellation/partial refunds with proportional reversal; refusals hold", flush=True)
+    print("9. an authorization that lapses before delivery cancels the order and frees the unit", flush=True)
+    order5, pi5 = buyer.buy(unit2)  # unit 2 is for sale again after step 6
+    stub(f"/__test/payment_intents/{pi5}/expire", {})
+    assert money_report(env)["lapsed_canceled"] == 0  # too recent to look at
+    assert money_report(env, "lapse-check-all")["lapsed_canceled"] == 1
+    assert buyer.order(order5["id"])["status"] == "canceled" and db_reserved(unit2) == 0
+    refused(lambda: buyer.signed(f"/market/orders/{order5['id']}/deliver", {}, {"action": "deliver", "orderId": order5["id"]}),
+            "demo_order_required")
+
+    state = stub("/__test/state")
+    kept = sum(f["amount"] - f["amount_refunded"] for f in state["application_fees"].values())
+    sellers = {a: v["balance"] for a, v in state["accounts"].items()}
+    print(f"  Interfacer kept {kept} cents of commission; seller balances {sellers}")
+    # Commission on what was not refunded: order3 160 - 40, build 152.
+    assert kept == (160 - 40) + 152
+    assert sellers == {account: 0 + (1995 - 500) - (160 - 40), maker["account_id"]: 1900 - 152}
+    print("PASS payments (direct charges): Standard accounts + signed terms, payment on the seller's account with the "
+          "commission as application fee, capture at delivery (stock) / at order (build), return/cancellation/partial "
+          "refunds with the commission given back, lapsed authorizations; refusals hold", flush=True)
 
 
 if __name__ == "__main__":

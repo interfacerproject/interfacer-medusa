@@ -19,7 +19,6 @@
     "@medusajs/cli": "2.10.3",
     "@medusajs/framework": "2.10.3",
     "@medusajs/medusa": "2.10.3",
-    "@medusajs/payment-stripe": "2.10.3",
     "pg": "8.16.3",
     "stripe": "15.12.0"
   },

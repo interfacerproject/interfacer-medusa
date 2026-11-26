@@ -1,12 +1,13 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import {
-  paymentConfigProblems, paymentSettings, platformFee, remainingNet, sellerShareOfRefunds, settlementSplit,
-  STRIPE_PROVIDER_ID, SYSTEM_PROVIDER_ID,
+  paymentConfigProblems, paymentSettings, platformFee, STRIPE_PROVIDER_ID, SYSTEM_PROVIDER_ID,
 } from "../modules/interfacer/payments"
 import { caseEligibility, nextCaseStatus, type OrderFacts } from "../modules/interfacer/aftersale"
-import { chargeOf, connectStatus, setStripeApiForTests, stripeOptions, type StripeApi } from "../modules/interfacer/stripe-connect"
-import { advancePayout } from "../modules/interfacer/settlement"
+import { connectStatus, setStripeApiForTests, stripeOptions } from "../modules/interfacer/stripe-connect"
+import { verifyStripePayment } from "../modules/interfacer/settlement"
+import DirectProvider, { sessionStatus, toMinor } from "../modules/stripe-payment/service"
+import { BigNumber } from "@medusajs/framework/utils"
 
 const STRIPE = {
   STRIPE_SECRET_KEY: "sk_test_abc", STRIPE_PUBLISHABLE_KEY: "pk_test_abc", STRIPE_WEBHOOK_SECRET: "whsec_abc",
@@ -18,7 +19,7 @@ test("without a Stripe key the marketplace keeps the system test provider", () =
   assert.equal(s.provider, "system")
   assert.equal(s.provider_id, SYSTEM_PROVIDER_ID)
   assert.deepEqual(s.terms, { fee_bps: 0, fee_fixed_cents: 0, terms_version: "2026-11" })
-  assert.equal(s.hold_days, 14)
+  assert.equal(s.return_window_days, 14)
   assert.deepEqual(paymentConfigProblems({}), [])
 })
 
@@ -38,7 +39,7 @@ test("half-configured or unsafe Stripe settings refuse to start", () => {
   assert.match(problems({ STRIPE_PUBLISHABLE_KEY: "pk_live_abc" }), /both be test or both be live/)
   assert.match(problems({ INTERFACER_PLATFORM_FEE_BPS: "9000" }), /FEE_BPS/)
   assert.match(problems({ INTERFACER_PLATFORM_FEE_BPS: "-1" }), /FEE_BPS/)
-  assert.match(problems({ INTERFACER_PAYOUT_HOLD_DAYS: "x" }), /HOLD_DAYS/)
+  assert.match(problems({ INTERFACER_RETURN_WINDOW_DAYS: "x" }), /RETURN_WINDOW_DAYS/)
   assert.match(problems({ STRIPE_API_BASE: "http://127.0.0.1:12111", NODE_ENV: "production" }), /STRIPE_API_BASE/)
   // A pilot promises that nothing is charged: live keys need an explicit switch.
   const live = { STRIPE_SECRET_KEY: "sk_live_abc", STRIPE_PUBLISHABLE_KEY: "pk_live_abc", INTERFACER_DEPLOYMENT: "pilot" }
@@ -50,33 +51,24 @@ test("commission: percentage plus fixed part, rounded to the cent, never above t
   assert.equal(platformFee(1995, { fee_bps: 800, fee_fixed_cents: 0 }), 160) // 159.6 -> 160
   assert.equal(platformFee(1995, { fee_bps: 800, fee_fixed_cents: 25 }), 185)
   assert.equal(platformFee(10, { fee_bps: 0, fee_fixed_cents: 25 }), 10)
-  assert.deepEqual(settlementSplit(3600, { fee_bps: 1000, fee_fixed_cents: 0 }),
-    { gross_cents: 3600, fee_cents: 360, net_cents: 3240 })
+  assert.equal(platformFee(1900, { fee_bps: 800, fee_fixed_cents: 0 }), 152)
   assert.throws(() => platformFee(-1, { fee_bps: 0, fee_fixed_cents: 0 }), /invalid_cents/)
   assert.throws(() => platformFee(1.5, { fee_bps: 0, fee_fixed_cents: 0 }), /invalid_cents/)
 })
 
-test("refunds take back the seller's share proportionally, without drifting", () => {
-  const payout = { gross_cents: 1995, net_cents: 1835 }
-  assert.equal(sellerShareOfRefunds(payout, 0), 0)
-  assert.equal(sellerShareOfRefunds(payout, 1995), 1835)
-  assert.equal(sellerShareOfRefunds(payout, 500), 460) // 459.9
-  // Two partial refunds add up to the same share as one of their sum.
-  const first = sellerShareOfRefunds(payout, 333)
-  const second = sellerShareOfRefunds(payout, 333 + 1662) - first
-  assert.equal(first + second, 1835)
-  assert.equal(remainingNet(payout, 500), 1835 - 460)
-  assert.throws(() => sellerShareOfRefunds(payout, 1996), /refund_exceeds_payment/)
-})
-
 const facts = (f: Partial<OrderFacts> = {}): OrderFacts => ({
-  canceled: false, captured: true, paid_cents: 1995, refunded_cents: 0, milestone_at: null, open_case: false, ...f,
+  canceled: false, paid: true, captured: true, paid_cents: 1995, refunded_cents: 0, milestone_at: null,
+  open_case: false, ...f,
 })
 
 test("cancellation only before handover; return only after it, inside the window", () => {
   const now = new Date("2026-11-26T12:00:00Z")
   const delivered = new Date("2026-11-20T12:00:00Z")
   assert.deepEqual(caseEligibility("cancellation", facts(), 14, now), { ok: true })
+  // Stripe stock before delivery: only authorized, and that is enough to ask.
+  assert.deepEqual(caseEligibility("cancellation", facts({ captured: false }), 14, now), { ok: true })
+  assert.deepEqual(caseEligibility("cancellation", facts({ paid: false, captured: false }), 14, now),
+    { ok: false, reason: "captured_payment_required" })
   assert.deepEqual(caseEligibility("cancellation", facts({ milestone_at: delivered }), 14, now),
     { ok: false, reason: "cancellation_after_handover" })
   assert.deepEqual(caseEligibility("return", facts(), 14, now), { ok: false, reason: "return_before_handover" })
@@ -85,8 +77,6 @@ test("cancellation only before handover; return only after it, inside the window
     { ok: false, reason: "return_window_closed" })
   assert.deepEqual(caseEligibility("return", facts({ milestone_at: delivered, open_case: true }), 14, now),
     { ok: false, reason: "aftersale_case_open" })
-  assert.deepEqual(caseEligibility("cancellation", facts({ captured: false }), 14, now),
-    { ok: false, reason: "captured_payment_required" })
   assert.deepEqual(caseEligibility("cancellation", facts({ refunded_cents: 1995 }), 14, now),
     { ok: false, reason: "order_fully_refunded" })
   assert.deepEqual(caseEligibility("cancellation", facts({ canceled: true }), 14, now),
@@ -106,13 +96,12 @@ test("case lifecycle: only the listed transitions exist", () => {
   assert.throws(() => nextCaseStatus("return", "refunded", "refunded"), /aftersale_transition_forbidden/)
 })
 
-test("a connected account is ready only with details, payouts and active transfers", () => {
-  const account = (extra: Record<string, unknown>) => ({ id: "acct_1", details_submitted: true, payouts_enabled: true,
-    capabilities: { transfers: "active" }, requirements: { currently_due: [], past_due: [], disabled_reason: null },
-    ...extra }) as any
-  assert.equal(connectStatus(account({})).ready, true)
-  assert.equal(connectStatus(account({ payouts_enabled: false })).ready, false)
-  assert.equal(connectStatus(account({ capabilities: { transfers: "pending" } })).ready, false)
+test("a seller's account is ready to sell once Stripe lets it take card payments", () => {
+  const account = (extra: Record<string, unknown>) => ({ id: "acct_1", details_submitted: true, charges_enabled: true,
+    payouts_enabled: false, requirements: { currently_due: [], past_due: [], disabled_reason: null }, ...extra }) as any
+  assert.equal(connectStatus(account({})).ready, true) // payouts may still be set up later
+  assert.equal(connectStatus(account({ charges_enabled: false })).ready, false)
+  assert.equal(connectStatus(account({ details_submitted: false })).ready, false)
   const due = connectStatus(account({ details_submitted: false,
     requirements: { currently_due: ["external_account"], past_due: ["external_account", "tos_acceptance.date"] } }))
   assert.deepEqual(due.requirements_due, ["external_account", "tos_acceptance.date"])
@@ -124,105 +113,111 @@ test("tests may point the SDK at a local Stripe stand-in", () => {
   assert.equal(stripeOptions().host, undefined)
 })
 
-test("a transfer is tied to the order's own charge", async () => {
-  const api = { paymentIntents: { retrieve: async () => ({ status: "succeeded", latest_charge: "ch_9" }) } } as any
-  assert.equal(await chargeOf(api, "pi_1", "ch_1"), "ch_1")
-  assert.equal(await chargeOf(api, "pi_1", null), "ch_9")
-  const pending = { paymentIntents: { retrieve: async () => ({ status: "requires_capture", latest_charge: "ch_9" }) } } as any
-  await assert.rejects(chargeOf(pending, "pi_1"), /stripe_charge_not_settled/)
-})
+// ---- the direct-charge provider against a fake Stripe ----
 
-// ---- payouts against a fake container and a fake Stripe ----
-
-function world(opts: { refunds?: number[]; cases?: unknown[]; status?: string; priorTransfers?: any[]; failCreate?: Error } = {}) {
-  const payout: any = { id: "ifpo_1", order_id: "order_1", seller_person_id: "S", stripe_account_id: "acct_S",
-    payment_intent_id: "pi_1", charge_id: "ch_1", currency_code: "eur", gross_cents: 1995, fee_cents: 160,
-    net_cents: 1835, terms_version: "2026-11", status: "held", release_at: new Date("2026-11-01T00:00:00Z"),
-    transfer_id: null, transferred_cents: 0, reversed_cents: 0, attempts: 0, last_error: null }
-  const calls: { create: any[]; list: number } = { create: [], list: 0 }
-  const integration = {
-    retrievePayout: async () => ({ ...payout }),
-    withProjectionLock: async (_k: string, work: () => Promise<unknown>) => work(),
-    listAfterSaleCases: async () => opts.cases ?? [],
-    updatePayouts: async (patch: any) => Object.assign(payout, patch),
-  }
-  const order = { id: "order_1", status: opts.status ?? "completed", customer_id: "cus_1", currency_code: "eur",
-    items: [{ id: "li_1", variant_id: "v", product_id: "p", quantity: 1, unit_price: 19.95 }],
-    payment_collections: [{ payments: [{ id: "pay_1", provider_id: STRIPE_PROVIDER_ID, amount: 19.95,
-      captured_at: "2026-10-30", data: { id: "pi_1" }, refunds: (opts.refunds ?? []).map((c, i) => ({
-        id: "ref_" + i, amount: c / 100 })) }] }] }
-  const container = { resolve: (key: string) => key === "query"
-    ? { graph: async () => ({ data: [order] }) } : integration } as any
-  const api: StripeApi = {
-    transfers: {
-      list: async () => { calls.list++; return { data: opts.priorTransfers ?? [] } as any },
-      create: async (params: any, options: any) => {
-        if (opts.failCreate) throw opts.failCreate
-        calls.create.push({ params, options })
-        return { id: "tr_1", amount: params.amount, destination: params.destination, reversed: false } as any
-      },
-      createReversal: async () => { throw new Error("unused") },
+function provider() {
+  const calls: { op: string; args: any[] }[] = []
+  const intent = (extra: Record<string, unknown> = {}) => ({ id: "pi_1", object: "payment_intent", amount: 1995,
+    currency: "eur", status: "requires_payment_method", application_fee_amount: 160, capture_method: "manual",
+    client_secret: "pi_1_secret_x", last_payment_error: null, ...extra })
+  const fake = {
+    paymentIntents: {
+      create: async (...args: any[]) => { calls.push({ op: "create", args }); return intent() },
+      retrieve: async (...args: any[]) => { calls.push({ op: "retrieve", args }); return intent({ status: "requires_capture" }) },
+      capture: async (...args: any[]) => { calls.push({ op: "capture", args }); return intent({ status: "succeeded" }) },
+      cancel: async (...args: any[]) => { calls.push({ op: "cancel", args }); return intent({ status: "canceled" }) },
     },
-    paymentIntents: { retrieve: async () => { throw new Error("unused") } },
-    accounts: {} as any, accountLinks: {} as any,
+    refunds: { create: async (...args: any[]) => { calls.push({ op: "refund", args }); return { id: "re_1" } } },
   }
-  setStripeApiForTests(api)
-  return { payout, calls, container }
+  const p = new DirectProvider({}, { apiKey: "sk_test_x", webhookSecret: "whsec_x" }) as any
+  p.stripe_ = fake
+  return { p, calls }
 }
 
-test("a due payout transfers the seller's net share once, tied to the charge", async () => {
-  const { payout, calls, container } = world()
-  assert.equal(await advancePayout(container, payout.id, new Date("2026-11-26T00:00:00Z")), "transferred")
-  assert.equal(calls.create.length, 1)
-  assert.deepEqual(calls.create[0].params, { amount: 1835, currency: "eur", destination: "acct_S",
-    source_transaction: "ch_1", transfer_group: "order_1", description: "Interfacer marketplace order order_1",
-    metadata: { interfacer_payout_id: "ifpo_1", interfacer_order_id: "order_1" } })
-  assert.equal(calls.create[0].options.idempotencyKey, "interfacer-payout:ifpo_1:1835")
-  assert.equal(payout.status, "transferred")
-  assert.equal(payout.transferred_cents, 1835)
-  // Running again does nothing.
-  assert.equal(await advancePayout(container, payout.id, new Date("2026-11-26T00:00:00Z")), "skipped")
-  assert.equal(calls.create.length, 1)
+const DIRECT = { stripe_account: "acct_S", application_fee_amount: 160, order_reference: "cart_1" }
+
+test("direct charge: the intent lives on the seller's account, with the commission as application fee", async () => {
+  const { p, calls } = provider()
+  const out = await p.initiatePayment({ amount: 19.95, currency_code: "eur", context: {},
+    data: { session_id: "payses_1", interfacer_direct: DIRECT } })
+  const [params, options] = calls[0].args
+  assert.deepEqual(params, { amount: 1995, currency: "eur", application_fee_amount: 160, capture_method: "manual",
+    automatic_payment_methods: { enabled: true }, description: "Interfacer marketplace order",
+    metadata: { session_id: "payses_1", interfacer_order_reference: "cart_1" } })
+  assert.equal(options.stripeAccount, "acct_S")
+  assert.equal(out.data.stripe_account, "acct_S")
+  assert.equal(out.data.client_secret, "pi_1_secret_x")
 })
 
-test("a payout waits for its release date and for open after-sale cases", async () => {
-  const early = world()
-  assert.equal(await advancePayout(early.container, "ifpo_1", new Date("2026-10-31T00:00:00Z")), "held")
-  const disputed = world({ cases: [{ id: "ifcase_1" }] })
-  assert.equal(await advancePayout(disputed.container, "ifpo_1", new Date("2026-11-26T00:00:00Z")), "held")
-  assert.equal(early.calls.create.length + disputed.calls.create.length, 0)
+test("direct charge: a session without the marketplace's terms, or with a fee above the price, is refused", async () => {
+  const { p, calls } = provider()
+  await assert.rejects(p.initiatePayment({ amount: 19.95, currency_code: "eur", data: { session_id: "s" } }),
+    /stripe_direct_session_route_required/)
+  await assert.rejects(p.initiatePayment({ amount: 1, currency_code: "eur",
+    data: { session_id: "s", interfacer_direct: DIRECT } }), /fee_exceeds_amount/)
+  await assert.rejects(p.initiatePayment({ amount: 19.95, currency_code: "usd",
+    data: { session_id: "s", interfacer_direct: DIRECT } }), /eur_only/)
+  assert.equal(calls.length, 0)
 })
 
-test("refunds before the transfer shrink it; a full refund or cancellation cancels it", async () => {
-  const partial = world({ refunds: [500] })
-  assert.equal(await advancePayout(partial.container, "ifpo_1", new Date("2026-11-26T00:00:00Z")), "transferred")
-  assert.equal(partial.calls.create[0].params.amount, 1835 - 460)
-  const full = world({ refunds: [1995] })
-  assert.equal(await advancePayout(full.container, "ifpo_1", new Date("2026-11-26T00:00:00Z")), "canceled")
-  assert.equal(full.payout.status, "canceled")
-  const canceled = world({ status: "canceled" })
-  assert.equal(await advancePayout(canceled.container, "ifpo_1", new Date("2026-11-26T00:00:00Z")), "canceled")
+test("direct charge: capture, cancel and refund act on the seller's account; refunds give the commission back", async () => {
+  const { p, calls } = provider()
+  const data = { id: "pi_1", stripe_account: "acct_S", currency: "eur" }
+  assert.equal((await p.capturePayment({ data, context: {} })).data.status, "succeeded")
+  await p.cancelPayment({ data, context: {} })
+  await p.refundPayment({ amount: 5, data, context: {} })
+  assert.deepEqual(calls.map(c => [c.op, c.args.at(-1).stripeAccount]),
+    [["capture", "acct_S"], ["cancel", "acct_S"], ["refund", "acct_S"]])
+  assert.deepEqual(calls[2].args[0], { payment_intent: "pi_1", amount: 500, refund_application_fee: true })
+  await assert.rejects(p.capturePayment({ data: { id: "pi_1" }, context: {} }), /stripe_direct_payment_data_missing/)
 })
 
-test("a transfer whose response was lost is found again, not sent twice", async () => {
-  const { payout, calls, container } = world({ priorTransfers: [{ id: "tr_0", amount: 1835, destination: "acct_S",
-    reversed: false, metadata: { interfacer_payout_id: "ifpo_1" } }] })
-  assert.equal(await advancePayout(container, payout.id, new Date("2026-11-26T00:00:00Z")), "transferred")
-  assert.equal(calls.create.length, 0)
-  assert.equal(payout.transfer_id, "tr_0")
+test("direct charge: Stripe statuses map to Medusa's session statuses", () => {
+  assert.equal(sessionStatus({ status: "requires_capture", last_payment_error: null } as any), "authorized")
+  assert.equal(sessionStatus({ status: "succeeded", last_payment_error: null } as any), "captured")
+  assert.equal(sessionStatus({ status: "requires_action", last_payment_error: null } as any), "requires_more")
+  assert.equal(sessionStatus({ status: "requires_payment_method", last_payment_error: { code: "x" } } as any), "error")
+  assert.equal(sessionStatus({ status: "canceled", last_payment_error: null } as any), "canceled")
 })
 
-test("a Stripe outage is retried later with backoff; duplicates block for an operator", async () => {
-  const down = world({ failCreate: new Error("stripe_connection_error") })
-  const now = new Date("2026-11-26T00:00:00Z")
-  assert.equal(await advancePayout(down.container, "ifpo_1", now), "retry")
-  assert.equal(down.payout.status, "held")
-  assert.equal(down.payout.attempts, 1)
-  assert.equal(down.payout.last_error, "stripe_connection_error")
-  assert.ok(new Date(down.payout.next_attempt_at) > now)
-  const dup = { amount: 1835, destination: "acct_S", reversed: false, metadata: { interfacer_payout_id: "ifpo_1" } }
-  const twice = world({ priorTransfers: [{ id: "tr_a", ...dup }, { id: "tr_b", ...dup }] })
-  assert.equal(await advancePayout(twice.container, "ifpo_1", now), "blocked")
-  assert.equal(twice.payout.status, "blocked")
-  setStripeApiForTests(undefined)
+// ---- the check before the cart is completed ----
+
+const SETTLEMENT = { seller_person_id: "S", stripe_account_id: "acct_S", terms_version: "2026-11", fee_bps: 800,
+  fee_fixed_cents: 0 }
+
+async function verify(intent: Record<string, unknown>, session: Record<string, unknown> = {}) {
+  const cart = { id: "cart_1", total: 19.95, payment_collection: { id: "pc_1", payment_sessions: [{ id: "ps",
+    provider_id: STRIPE_PROVIDER_ID, data: { id: "pi_1", stripe_account: "acct_S", ...session } }] } }
+  const container = { resolve: () => ({ graph: async () => ({ data: [cart] }) }) } as any
+  const asked: unknown[][] = []
+  setStripeApiForTests({ paymentIntents: { retrieve: async (...args: unknown[]) => { asked.push(args); return {
+    id: "pi_1", amount: 1995, currency: "eur", capture_method: "manual", application_fee_amount: 160,
+    status: "requires_capture", ...intent } as any } }, accounts: {} as any, accountLinks: {} as any })
+  const saved = process.env.STRIPE_SECRET_KEY
+  process.env.STRIPE_SECRET_KEY = "sk_test_x"
+  try { await verifyStripePayment(container, "cart_1", SETTLEMENT) }
+  finally {
+    setStripeApiForTests(undefined)
+    if (saved === undefined) delete process.env.STRIPE_SECRET_KEY
+    else process.env.STRIPE_SECRET_KEY = saved
+  }
+  return asked
+}
+
+test("completion needs an authorized intent on the seller's account, for the total and the commission", async () => {
+  const asked = await verify({})
+  assert.deepEqual(asked[0][2], { stripeAccount: "acct_S" })
+  await assert.rejects(verify({ status: "requires_payment_method" }), /payment_not_authorized/)
+  await assert.rejects(verify({ application_fee_amount: 0 }), /payment_terms_mismatch/)
+  await assert.rejects(verify({ amount: 1 }), /payment_terms_mismatch/)
+  await assert.rejects(verify({ capture_method: "automatic" }), /payment_terms_mismatch/)
+  await assert.rejects(verify({}, { stripe_account: "acct_OTHER" }), /payment_terms_mismatch/)
+})
+
+test("direct charge: amounts arrive as numbers, strings or BigNumbers and become cents", () => {
+  assert.equal(toMinor(19.95, "eur"), 1995)
+  assert.equal(toMinor("19.95", "EUR"), 1995)
+  assert.equal(toMinor(new BigNumber(19.95), "eur"), 1995)
+  assert.equal(toMinor({ value: "5", precision: 20 }, "eur"), 500)
+  assert.throws(() => toMinor("x", "eur"), /invalid_amount/)
 })

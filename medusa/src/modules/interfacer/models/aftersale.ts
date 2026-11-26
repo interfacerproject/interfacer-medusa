@@ -21,9 +21,10 @@ export const AfterSaleCase = model.define("interfacer_aftersale_case", {
   closed_at: model.dateTime().nullable(),
 })
 
-// One financial refund to the buyer (full or partial), with the seller's share
-// taken back from their payout. Never deleted; `note` on the native Medusa
-// refund carries this id so an interrupted refund is reconciled, not repeated.
+// One financial refund to the buyer (full or partial), made on the seller's
+// Stripe account; Stripe gives the platform's commission back in proportion.
+// Never deleted; `note` on the native Medusa refund carries this id so an
+// interrupted refund is reconciled, not repeated.
 export const Refund = model.define("interfacer_refund", {
   id: model.id({ prefix: "ifrf" }).primaryKey(),
   order_id: model.text().index(),
@@ -32,8 +33,5 @@ export const Refund = model.define("interfacer_refund", {
   reason: model.text(),
   requested_by: model.text(),
   status: model.enum(["pending", "done", "failed"]).default("pending"),
-  // How much of the seller's already-transferred share Stripe took back.
-  reversal_cents: model.number().default(0),
-  reversal_id: model.text().nullable(),
   last_error: model.text().nullable(),
 })

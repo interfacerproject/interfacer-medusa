@@ -9,7 +9,7 @@ import { INTERFACER_MODULE } from "../../../../modules/interfacer"
 import type InterfacerService from "../../../../modules/interfacer/service"
 import { withSync } from "../../../../modules/interfacer/zenflows-outbox"
 import { openCasesFor } from "../../../../modules/interfacer/aftersale"
-import { publicPayout } from "../../../../modules/interfacer/settlement"
+import { AUTHORIZATION_DAYS, STRIPE_PROVIDER_ID } from "../../../../modules/interfacer/settlement"
 
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   if (!allowMarketStorefront(req, res)) return
@@ -32,29 +32,33 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const orders: Record<string, unknown>[] = []
   for (let skip = 0; sold.size; skip += 100) {
     const { data } = await query.graph({ entity: "order", pagination: { skip, take: 100 },
-      fields: ["id", "status", "created_at", "summary.*", "items.variant_id", "payment_collections.payments.captured_at"] })
+      fields: ["id", "status", "created_at", "summary.*", "items.variant_id", "payment_collections.payments.captured_at",
+        "payment_collections.payments.canceled_at", "payment_collections.payments.provider_id"] })
     for (const order of data) {
       const ref = order.items?.length === 1 ? sold.get(order.items[0]?.variant_id ?? "") : undefined
       if (!ref) continue
-      const captured = order.payment_collections?.some((c: any) => c?.payments?.some((p: any) => p?.captured_at)) ?? false
+      const payments = order.payment_collections?.flatMap((c: any) => c?.payments ?? []) ?? []
+      const captured = payments.some((p: any) => p?.captured_at)
+      // Stripe stock orders are only authorized until the delivery captures them.
+      const authorized = !captured && payments.some((p: any) => p?.provider_id === STRIPE_PROVIDER_ID && !p?.canceled_at)
+      const authorization = authorized ? { capture_by: new Date(new Date(order.created_at as any).getTime() +
+        AUTHORIZATION_DAYS * 86_400_000).toISOString() } : {}
       // A build carries its quoted total; a stock sale, what the buyer paid.
       // (Medusa 2.10's graph `total` is not computed here; the order summary is.)
       const total_eur = typeof ref.total_eur === "number" ? ref.total_eur
         : Number((order as any).summary?.current_order_total ?? 0)
-      orders.push({ id: order.id, status: order.status, created_at: order.created_at, captured, ...ref, total_eur })
+      orders.push({ id: order.id, status: order.status, created_at: order.created_at, captured,
+        paid: captured || authorized, ...authorization, ...ref, total_eur })
     }
     if (data.length < 100) break
   }
   const ids = orders.map(o => o.id as string)
   const receipts = ids.length ? await integration.listReaReceipts({ order_id: ids }, { take: ids.length }) : []
   const syncs = ids.length ? await integration.listZenflowsSyncs({ order_id: ids }, { take: ids.length }) : []
-  const payouts = ids.length ? await integration.listPayouts({ order_id: ids }, { take: ids.length }) : []
   const cases = await openCasesFor(req.scope, person)
   for (const order of orders) {
     const receipt = receipts.find(r => r.order_id === order.id)
     order.receipt = receipt ? withSync(receipt, syncs.find(s => s.order_id === order.id) as any) : null
-    const payout = payouts.find(p => p.order_id === order.id)
-    order.payout = payout ? publicPayout(payout) : null
     order.open_case = cases.find(c => c.order_id === order.id) ?? null
   }
   res.json({ person, listings, catalog, orders, cases })

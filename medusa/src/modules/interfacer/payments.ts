@@ -1,16 +1,16 @@
-// Real payments (Stripe Connect) and the platform commission: configuration and
-// the pure money arithmetic. Everything here is in integer EUR cents.
+// Real payments (Stripe Connect, direct charges) and the platform commission:
+// configuration and the pure money arithmetic, in integer EUR cents.
 //
-// Model (owner brief, 2026-11-26): the platform is the merchant of record and
-// takes a commission; every seller/maker has their OWN Stripe account (Express,
-// Stripe-hosted onboarding). The buyer pays the platform; the seller's share is
-// transferred to their account once the sale is economically complete (the
-// signed delivery / production milestone) and the hold period has passed
-// ("separate charges and transfers"). Refunds before that are simple refunds;
-// refunds after it also reverse the seller's share proportionally.
+// Model (owner decision, 2026-11-26): the buyer pays the SELLER directly. Each
+// seller/maker has their own Standard Stripe account and is the merchant of
+// record; the PaymentIntent lives on their account and Interfacer's commission
+// is an application fee Stripe moves to the platform at capture. A refund
+// gives the commission back in proportion. Stock orders are captured at the
+// signed delivery (the authorization holds the money until then, at most
+// 7 days); builds are captured once the order exists.
 //
 // Without STRIPE_SECRET_KEY the marketplace keeps Medusa's system (test)
-// provider, exactly as in the pilot: no money moves and no payouts exist.
+// provider, exactly as in the pilot.
 
 export const SYSTEM_PROVIDER_ID = "pp_system_default"
 // Medusa provider ids are pp_<identifier>_<id>; ours registers as stripe/stripe.
@@ -21,7 +21,6 @@ export type PaymentSettings = {
   provider: "system" | "stripe"
   provider_id: string
   terms: FeeTerms
-  hold_days: number
   return_window_days: number
   stripe?: { secret_key: string; publishable_key: string; webhook_secret: string; api_base?: string; gui_url: string }
 }
@@ -39,11 +38,7 @@ export function paymentSettings(env: Env = process.env): PaymentSettings {
     fee_fixed_cents: int(env.INTERFACER_PLATFORM_FEE_FIXED_CENTS, 0),
     terms_version: env.INTERFACER_SELLER_TERMS_VERSION || "2026-11",
   }
-  const base = {
-    terms,
-    hold_days: int(env.INTERFACER_PAYOUT_HOLD_DAYS, 14),
-    return_window_days: int(env.INTERFACER_RETURN_WINDOW_DAYS, 14),
-  }
+  const base = { terms, return_window_days: int(env.INTERFACER_RETURN_WINDOW_DAYS, 14) }
   if (!env.STRIPE_SECRET_KEY) return { provider: "system", provider_id: SYSTEM_PROVIDER_ID, ...base }
   return { provider: "stripe", provider_id: STRIPE_PROVIDER_ID, ...base, stripe: {
     secret_key: env.STRIPE_SECRET_KEY,
@@ -68,7 +63,6 @@ export function paymentConfigProblems(env: Env = process.env): string[] {
   if (!Number.isInteger(fee_fixed_cents) || fee_fixed_cents > 10_000)
     problems.push("INTERFACER_PLATFORM_FEE_FIXED_CENTS (0-10000)")
   if (!/^[A-Za-z0-9._-]{1,40}$/.test(terms_version)) problems.push("INTERFACER_SELLER_TERMS_VERSION")
-  if (!Number.isInteger(s.hold_days) || s.hold_days > 90) problems.push("INTERFACER_PAYOUT_HOLD_DAYS (0-90)")
   if (!Number.isInteger(s.return_window_days) || s.return_window_days > 90)
     problems.push("INTERFACER_RETURN_WINDOW_DAYS (0-90)")
   if (!s.stripe) return problems
@@ -105,29 +99,6 @@ export function platformFee(gross_cents: number, terms: Pick<FeeTerms, "fee_bps"
   assertCents(gross_cents, "gross")
   const fee = Math.round(gross_cents * terms.fee_bps / 10_000) + terms.fee_fixed_cents
   return Math.min(gross_cents, fee)
-}
-
-export function settlementSplit(gross_cents: number, terms: Pick<FeeTerms, "fee_bps" | "fee_fixed_cents">) {
-  const fee_cents = platformFee(gross_cents, terms)
-  return { gross_cents, fee_cents, net_cents: gross_cents - fee_cents }
-}
-
-// The seller's share of a refund: the same proportion of it as their share of
-// the sale (the platform gives back its commission on the refunded part too).
-// Cumulative, so rounding never drifts: the seller's share of everything
-// refunded so far, minus what was already taken back.
-export function sellerShareOfRefunds(payout: { gross_cents: number; net_cents: number },
-  refunded_total_cents: number): number {
-  assertCents(refunded_total_cents, "refunded_total")
-  if (refunded_total_cents > payout.gross_cents) throw new Error("refund_exceeds_payment")
-  if (refunded_total_cents === payout.gross_cents) return payout.net_cents
-  if (!payout.gross_cents) return 0
-  return Math.round(payout.net_cents * refunded_total_cents / payout.gross_cents)
-}
-
-// What the seller is still owed after the refunds so far (before any transfer).
-export function remainingNet(payout: { gross_cents: number; net_cents: number }, refunded_total_cents: number) {
-  return payout.net_cents - sellerShareOfRefunds(payout, refunded_total_cents)
 }
 
 export function addDays(at: Date, days: number): Date {

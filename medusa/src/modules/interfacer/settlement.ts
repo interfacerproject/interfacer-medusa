@@ -1,27 +1,31 @@
-// Money after the sale: who sold an order, what was paid, the terms frozen at
-// checkout, the seller's Stripe Connect account and the payout of their share.
+// Money around an order, with Stripe Connect DIRECT CHARGES: who the seller
+// is, their Stripe account and the commission terms they signed, the payment
+// session on their account, capture at delivery, and lapsed authorizations.
 //
 // Invariants:
-// - A Stripe order always carries the settlement terms it was bought under
+// - A Stripe order carries the settlement terms it was bought under
 //   (order.metadata.interfacer_settlement, stamped at checkout, rechecked by
 //   the completion hook). Later fee changes never touch an existing order.
-// - A payout exists only once the sale is economically complete (the signed
-//   delivery/production milestone), and is transferred only after release_at,
-//   with no after-sale case open, at most once (Stripe idempotency key plus a
-//   transfer_group lookup before any re-send).
+// - Its PaymentIntent lives on exactly that seller's account, for exactly the
+//   cart total, with exactly the commission of those terms as application
+//   fee, manual capture: checked on Stripe before the cart is completed.
+// - Stock: captured at the signed delivery. Build: captured once the order
+//   exists (it can take longer than an authorization lasts).
 import type { MedusaContainer } from "@medusajs/framework/types"
-import { ContainerRegistrationKeys, MedusaError } from "@medusajs/framework/utils"
+import { ContainerRegistrationKeys, MedusaError, Modules } from "@medusajs/framework/utils"
+import {
+  cancelOrderWorkflow, capturePaymentWorkflow, createPaymentCollectionForCartWorkflow, createPaymentSessionsWorkflow,
+} from "@medusajs/medusa/core-flows"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
 import { readBuildQuote } from "./build-purchase"
-import {
-  addDays, paymentSettings, remainingNet, settlementSplit, STRIPE_PROVIDER_ID, SYSTEM_PROVIDER_ID, toCents,
-  type FeeTerms,
-} from "./payments"
-import { chargeOf, connectStatus, createConnectAccount, dashboardLink, onboardingLink, stripeApi,
+import { addDays, paymentSettings, platformFee, STRIPE_PROVIDER_ID, SYSTEM_PROVIDER_ID, toCents,
+  type FeeTerms } from "./payments"
+import { connectStatus, createConnectAccount, onboardingLink, STRIPE_DASHBOARD_URL, stripeApi,
   type ConnectStatus, type StripeApi } from "./stripe-connect"
 import { verifyCommerceOperation } from "./zenflows-person"
 import { requireCommerceMode } from "./deployment"
+import { checkoutEvidence, type CheckoutCart } from "./checkout-guard"
 
 export function refuse(reason: string): never {
   throw new MedusaError(MedusaError.Types.NOT_ALLOWED, reason)
@@ -31,12 +35,15 @@ const invalid = (reason: string): never => { throw new MedusaError(MedusaError.T
 export type Settlement = FeeTerms & { seller_person_id: string; stripe_account_id: string }
 
 const integrationOf = (c: MedusaContainer) => c.resolve<InterfacerService>(INTERFACER_MODULE)
+const queryOf = (c: MedusaContainer) => c.resolve(ContainerRegistrationKeys.QUERY)
+
+// Stripe releases an uncaptured authorization after 7 days.
+export const AUTHORIZATION_DAYS = 7
 
 // ---- seller accounts ----
 
 export const ONBOARD_OP = "commerce.payouts.onboard"
-export const DASHBOARD_OP = "commerce.payouts.dashboard"
-// Where Stripe Express accounts can be opened for the marketplace's sellers.
+// Where Standard accounts can be opened for the marketplace's sellers.
 export const PAYOUT_COUNTRIES = ["AT", "BE", "DE", "DK", "ES", "FI", "FR", "GR", "IE", "IT", "NL", "PL", "PT", "SE"]
 
 function stripeSettings() {
@@ -49,14 +56,17 @@ async function refreshAccount(integration: InterfacerService, api: StripeApi,
   row: { id: string; stripe_account_id: string }): Promise<ConnectStatus> {
   const status = connectStatus(await api.accounts.retrieve(row.stripe_account_id))
   await integration.updateSellerAccounts({ id: row.id, details_submitted: status.details_submitted,
-    payouts_enabled: status.payouts_enabled, transfers_active: status.transfers_active,
+    charges_enabled: status.charges_enabled, payouts_enabled: status.payouts_enabled,
     status_checked_at: new Date() } as any)
   return status
 }
 
+const termsMatch = (row: FeeTerms, terms: FeeTerms) => row.terms_version === terms.terms_version &&
+  row.fee_bps === terms.fee_bps && row.fee_fixed_cents === terms.fee_fixed_cents
+
 // The seller signs the commission terms in force ({country, terms_version,
-// fee_bps, fee_fixed_cents}); the first call creates their Express account,
-// every call returns a fresh Stripe onboarding link (they expire in minutes).
+// fee_bps, fee_fixed_cents}); the first call creates their Standard account,
+// every call returns a fresh Stripe onboarding link until it can take payments.
 export async function onboardSeller(container: MedusaContainer, body: unknown, auth: unknown) {
   requireCommerceMode()
   const s = stripeSettings()
@@ -66,8 +76,7 @@ export async function onboardSeller(container: MedusaContainer, body: unknown, a
       Object.keys(params).sort().join(",") !== "country,fee_bps,fee_fixed_cents,terms_version" ||
       typeof params.country !== "string" || !PAYOUT_COUNTRIES.includes(params.country))
     invalid("invalid_payout_onboarding")
-  if (params!.terms_version !== s.terms.terms_version || params!.fee_bps !== s.terms.fee_bps ||
-      params!.fee_fixed_cents !== s.terms.fee_fixed_cents) refuse("seller_terms_outdated")
+  if (!termsMatch(params as unknown as FeeTerms, s.terms)) refuse("seller_terms_outdated")
   await verifyCommerceOperation(auth, ONBOARD_OP, params, person as string)
   const integration = integrationOf(container)
   const api = stripeApi()
@@ -79,42 +88,25 @@ export async function onboardSeller(container: MedusaContainer, body: unknown, a
       const account = await createConnectAccount(api, person as string, params!.country as string,
         "interfacer-seller-account:" + person)
       row = await integration.createSellerAccounts({ person_id: person as string, stripe_account_id: account.id,
-        country: params!.country as string, terms_version: s.terms.terms_version, fee_bps: s.terms.fee_bps,
-        fee_fixed_cents: s.terms.fee_fixed_cents, terms_accepted_at: new Date() } as any) as any
-    } else if (row.terms_version !== s.terms.terms_version || row.fee_bps !== s.terms.fee_bps ||
-               row.fee_fixed_cents !== s.terms.fee_fixed_cents) {
+        country: params!.country as string, ...s.terms, terms_accepted_at: new Date() } as any) as any
+    } else if (!termsMatch(row as unknown as FeeTerms, s.terms)) {
       // Re-signing accepts the new terms; orders already placed keep theirs.
-      await integration.updateSellerAccounts({ id: row.id, terms_version: s.terms.terms_version,
-        fee_bps: s.terms.fee_bps, fee_fixed_cents: s.terms.fee_fixed_cents, terms_accepted_at: new Date() } as any)
+      await integration.updateSellerAccounts({ id: row.id, ...s.terms, terms_accepted_at: new Date() } as any)
     }
     const status = await refreshAccount(integration, api, row)
-    const url = status.details_submitted && status.ready ? null : await onboardingLink(api, row.stripe_account_id, s.stripe.gui_url)
+    const url = status.ready ? null : await onboardingLink(api, row.stripe_account_id, s.stripe.gui_url)
     return { account_id: row.stripe_account_id, status, onboarding_url: url }
   })
 }
 
-export async function sellerDashboardLink(container: MedusaContainer, body: unknown, auth: unknown) {
-  requireCommerceMode()
-  stripeSettings()
-  const person = (auth as { envelope?: { person_id?: unknown } } | undefined)?.envelope?.person_id
-  if (typeof person !== "string" || !body || typeof body !== "object" || Object.keys(body).length)
-    invalid("invalid_payout_dashboard")
-  await verifyCommerceOperation(auth, DASHBOARD_OP, {}, person as string)
-  const [row] = await integrationOf(container).listSellerAccounts({ person_id: person as string })
-  if (!row) refuse("payout_account_required")
-  return { url: await dashboardLink(stripeApi(), row.stripe_account_id) }
-}
-
 // What the seller sees: whether payments are real, the terms in force and the
-// ones they signed, their account status (live from Stripe) and their payouts.
-export async function sellerPayoutOverview(container: MedusaContainer, person: string) {
+// ones they signed, and their account status (live from Stripe).
+export async function sellerPaymentsOverview(container: MedusaContainer, person: string) {
   const s = paymentSettings()
-  const integration = integrationOf(container)
-  const payouts = await integration.listPayouts({ seller_person_id: person },
-    { take: 200, order: { created_at: "DESC" } })
-  const base = { provider: s.provider, terms: s.terms, hold_days: s.hold_days,
-    return_window_days: s.return_window_days, countries: PAYOUT_COUNTRIES, payouts: payouts.map(publicPayout) }
+  const base = { provider: s.provider, terms: s.terms, return_window_days: s.return_window_days,
+    authorization_days: AUTHORIZATION_DAYS, countries: PAYOUT_COUNTRIES, dashboard_url: STRIPE_DASHBOARD_URL }
   if (!s.stripe) return { ...base, account: null }
+  const integration = integrationOf(container)
   const [row] = await integration.listSellerAccounts({ person_id: person })
   if (!row) return { ...base, account: null }
   let status: ConnectStatus | null = null
@@ -122,27 +114,18 @@ export async function sellerPayoutOverview(container: MedusaContainer, person: s
   return { ...base, account: {
     account_id: row.stripe_account_id, country: row.country,
     signed_terms: { terms_version: row.terms_version, fee_bps: row.fee_bps, fee_fixed_cents: row.fee_fixed_cents },
-    terms_current: row.terms_version === s.terms.terms_version && row.fee_bps === s.terms.fee_bps &&
-      row.fee_fixed_cents === s.terms.fee_fixed_cents,
+    terms_current: termsMatch(row as unknown as FeeTerms, s.terms),
     status: status ?? { account_id: row.stripe_account_id, details_submitted: row.details_submitted,
-      payouts_enabled: row.payouts_enabled, transfers_active: row.transfers_active,
-      ready: row.details_submitted && row.payouts_enabled && row.transfers_active,
-      requirements_due: [], disabled_reason: null, stale: true },
+      charges_enabled: row.charges_enabled, payouts_enabled: row.payouts_enabled,
+      ready: row.details_submitted && row.charges_enabled, requirements_due: [], disabled_reason: null, stale: true },
   } }
 }
 
-export function publicPayout(p: any) {
-  return { id: p.id, order_id: p.order_id, status: p.status, currency_code: p.currency_code,
-    gross_cents: p.gross_cents, fee_cents: p.fee_cents, net_cents: p.net_cents, release_at: p.release_at,
-    transferred_cents: p.transferred_cents, reversed_cents: p.reversed_cents, transfer_id: p.transfer_id,
-    last_error: p.last_error, terms_version: p.terms_version }
-}
-
-// ---- checkout: who gets paid, under which terms ----
+// ---- checkout: whose account, under which terms ----
 
 // Terms a Stripe checkout freezes on the cart. Refuses a seller who cannot be
-// paid yet (no account, onboarding unfinished, outdated signed terms): the
-// buyer is never charged for an order whose seller cannot receive the money.
+// paid (no account, onboarding unfinished, outdated signed terms) before the
+// buyer authorizes anything.
 export async function checkoutSettlement(container: MedusaContainer, seller_person_id: string,
   opts: { live?: boolean } = { live: true }): Promise<Settlement | undefined> {
   const s = paymentSettings()
@@ -150,29 +133,137 @@ export async function checkoutSettlement(container: MedusaContainer, seller_pers
   const integration = integrationOf(container)
   const [row] = await integration.listSellerAccounts({ person_id: seller_person_id })
   if (!row) refuse("seller_payouts_not_ready")
-  if (row.terms_version !== s.terms.terms_version || row.fee_bps !== s.terms.fee_bps ||
-      row.fee_fixed_cents !== s.terms.fee_fixed_cents) refuse("seller_terms_outdated")
+  if (!termsMatch(row as unknown as FeeTerms, s.terms)) refuse("seller_terms_outdated")
   const ready = opts.live ? (await refreshAccount(integration, stripeApi(), row)).ready
-    : row.details_submitted && row.payouts_enabled && row.transfers_active
+    : row.details_submitted && row.charges_enabled
   if (!ready) refuse("seller_payouts_not_ready")
   return { seller_person_id, stripe_account_id: row.stripe_account_id, terms_version: row.terms_version,
     fee_bps: row.fee_bps, fee_fixed_cents: row.fee_fixed_cents }
 }
 
+// The seller a checkout's money goes to, from the immutable evidence.
+export function evidenceSeller(evidence: { kind: "stock" | "build"; lines: { binding?: { seller_agent_id: string } }[];
+  purchase: { build?: { service_provider_person_id?: string } } }): string {
+  const seller = evidence.kind === "stock" ? evidence.lines[0]?.binding?.seller_agent_id
+    : evidence.purchase.build?.service_provider_person_id
+  if (!seller || (evidence.kind === "stock" && evidence.lines.some(l => l.binding?.seller_agent_id !== seller)))
+    refuse("one_seller_per_order_required")
+  return seller!
+}
+
+type SessionRow = { id: string; provider_id: string; status?: string; data?: Record<string, any> | null }
+type PaymentCart = CheckoutCart & { total?: unknown; completed_at?: string | null
+  payment_collection?: { id: string; payment_sessions?: SessionRow[] } | null }
+
+async function readPaymentCart(container: MedusaContainer, cartId: string): Promise<PaymentCart> {
+  const { data: [cart] } = await queryOf(container).graph({ entity: "cart", filters: { id: cartId }, fields: [
+    "id", "customer_id", "currency_code", "total", "completed_at", "metadata", "shipping_methods.id", "items.*",
+    "items.adjustments.*", "items.tax_lines.*", "payment_collection.id", "payment_collection.payment_sessions.*",
+  ] })
+  if (!cart) throw new MedusaError(MedusaError.Types.NOT_FOUND, "cart_not_found")
+  return cart as unknown as PaymentCart
+}
+
+// The Stripe terms of a direct charge for this settlement and this total.
+function directTerms(settlement: Settlement, total_cents: number) {
+  return { stripe_account: settlement.stripe_account_id, application_fee_amount: platformFee(total_cents, settlement) }
+}
+
+// The buyer's payment session: a PaymentIntent on the SELLER's account with the
+// commission as application fee, both computed here, never by the client.
+// Reuses a matching session (an authorized payment is never replaced).
+export async function createMarketPaymentSession(container: MedusaContainer, cartId: string, customerId: string) {
+  requireCommerceMode()
+  stripeSettings()
+  let cart = await readPaymentCart(container, cartId)
+  if (cart.customer_id !== customerId) refuse("buyer_cart_required")
+  if (cart.completed_at) refuse("cart_already_completed")
+  const evidence = await checkoutEvidence(container, cart)
+  if (!evidence) refuse("marketplace_cart_required")
+  const settlement = (await checkoutSettlement(container, evidenceSeller(evidence as any)))!
+  const total_cents = toCents(cart.total)
+  if (total_cents <= 0) refuse("cart_total_required")
+  const terms = directTerms(settlement, total_cents)
+  return integrationOf(container).withProjectionLock("interfacer-payment-session:" + cartId, async () => {
+    if (!cart.payment_collection) {
+      await createPaymentCollectionForCartWorkflow(container).run({ input: { cart_id: cartId } })
+      cart = await readPaymentCart(container, cartId)
+    }
+    const reusable = (cart.payment_collection!.payment_sessions ?? []).find(s => s.provider_id === STRIPE_PROVIDER_ID &&
+      s.data?.stripe_account === terms.stripe_account && s.data?.application_fee_amount === terms.application_fee_amount &&
+      s.data?.amount === total_cents && !["canceled", "error"].includes(String(s.status)) && s.data?.status !== "canceled")
+    const session = reusable ?? (await createPaymentSessionsWorkflow(container).run({ input: {
+      payment_collection_id: cart.payment_collection!.id, provider_id: STRIPE_PROVIDER_ID,
+      data: { interfacer_direct: { ...terms, order_reference: cartId } },
+    } })).result as unknown as SessionRow
+    const secret = session.data?.client_secret
+    if (typeof secret !== "string") refuse("payment_session_failed")
+    return { provider_id: STRIPE_PROVIDER_ID, client_secret: secret, stripe_account: terms.stripe_account,
+      amount_cents: total_cents }
+  })
+}
+
+// Before the cart is completed (the checkout middleware): the PaymentIntent is
+// authorized on Stripe, on this seller's account, for this total and this
+// commission. Also keeps Medusa 2.10.3 off its failed-authorization path,
+// which leaks reserved_quantity (interfacer-medusa#5).
+export async function verifyStripePayment(container: MedusaContainer, cartId: string, settlement: Settlement | undefined) {
+  if (!paymentSettings().stripe) return
+  if (!settlement) refuse("order_settlement_terms_missing")
+  const cart = await readPaymentCart(container, cartId)
+  const sessions = (cart.payment_collection?.payment_sessions ?? []).filter(s => s.provider_id === STRIPE_PROVIDER_ID)
+  if (sessions.length !== 1) refuse("payment_not_authorized")
+  const total_cents = toCents(cart.total)
+  const terms = directTerms(settlement!, total_cents)
+  const data = sessions[0].data ?? {}
+  if (data.stripe_account !== terms.stripe_account || !/^pi_[A-Za-z0-9]+$/.test(String(data.id ?? "")))
+    refuse("payment_terms_mismatch")
+  const intent = await stripeApi().paymentIntents.retrieve(String(data.id), {}, { stripeAccount: terms.stripe_account })
+  if (intent.amount !== total_cents || intent.currency !== "eur" || intent.capture_method !== "manual" ||
+      (intent.application_fee_amount ?? 0) !== terms.application_fee_amount) refuse("payment_terms_mismatch")
+  if (!["requires_capture", "succeeded"].includes(intent.status)) refuse("payment_not_authorized")
+}
+
+// A marketplace cart pays only through the marketplace's provider: with real
+// payments on, a test (system) session must never complete an order.
+export function requireMarketPaymentSessions(cart: { payment_collection?: { payment_sessions?: { provider_id: string }[] } | null }) {
+  const sessions = cart.payment_collection?.payment_sessions ?? []
+  const allowed = marketProviderIds()
+  if (!sessions.length || sessions.some(s => !allowed.has(s.provider_id))) refuse("payment_provider_not_allowed")
+}
+
+// The region offers exactly the marketplace's provider: Stripe when real
+// payments are on (the test provider is removed), else the system provider.
+export async function ensureRegionPaymentProvider(container: MedusaContainer, region_id: string) {
+  const wanted = paymentSettings().provider_id
+  const { data: [region] } = await queryOf(container).graph({
+    entity: "region", fields: ["id", "payment_providers.id"], filters: { id: region_id },
+  })
+  const ids = (region?.payment_providers ?? []).map((p: { id: string }) => p.id)
+  if (ids.length !== 1 || ids[0] !== wanted) {
+    const { updateRegionsWorkflow } = await import("@medusajs/medusa/core-flows")
+    await updateRegionsWorkflow(container).run({ input: { selector: { id: region_id },
+      update: { payment_providers: [wanted] } } })
+  }
+  return wanted
+}
+
 // ---- orders: seller, payment ----
 
 export type PaidOrder = {
-  id: string; status: string; customer_id: string | null; currency_code: string; metadata?: Record<string, unknown> | null
+  id: string; status: string; customer_id: string | null; currency_code: string; created_at?: string
+  metadata?: Record<string, unknown> | null
   items: { id: string; variant_id: string | null; product_id: string | null; quantity: unknown; unit_price: unknown }[]
   payment_collections?: { payments?: Payment[] }[]
 }
-type Payment = { id: string; provider_id: string; amount: unknown; captured_at?: string | null; canceled_at?: string | null
+export type Payment = { id: string; provider_id: string; amount: unknown; created_at?: string
+  captured_at?: string | null; canceled_at?: string | null
   data?: Record<string, unknown> | null; refunds?: { id: string; amount: unknown; note?: string | null }[] }
 
 export async function readPaidOrder(container: MedusaContainer, orderId: string): Promise<PaidOrder> {
-  const { data: [order] } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
+  const { data: [order] } = await queryOf(container).graph({
     entity: "order", filters: { id: orderId }, fields: [
-      "id", "status", "customer_id", "currency_code", "metadata", "items.id", "items.variant_id",
+      "id", "status", "customer_id", "currency_code", "created_at", "metadata", "items.id", "items.variant_id",
       "items.product_id", "items.quantity", "items.unit_price", "payment_collections.payments.*",
       "payment_collections.payments.refunds.*",
     ],
@@ -189,15 +280,12 @@ export function orderPayment(order: PaidOrder): Payment {
 }
 
 export const marketProviderIds = () => new Set([paymentSettings().provider_id])
+export const isStripePayment = (p: Payment) => p.provider_id === STRIPE_PROVIDER_ID
 
-// A milestone (delivery, production) needs a captured payment through the
-// marketplace's provider: never ship or build an unpaid or test-paid order
-// when real payments are on.
-export function requireCapturedMarketPayment(order: PaidOrder) {
-  const payment = orderPayment(order)
-  if (!marketProviderIds().has(payment.provider_id) || !payment.captured_at || payment.canceled_at)
-    refuse("captured_payment_required")
-  return payment
+// Paid for the after-sale rules: captured, or (Stripe stock before delivery)
+// authorized and not released.
+export function paymentHeld(p: Payment): boolean {
+  return !p.canceled_at && (!!p.captured_at || isStripePayment(p))
 }
 
 export function refundedCents(payment: Payment): number {
@@ -225,189 +313,87 @@ export async function buyerOfOrder(container: MedusaContainer, order: PaidOrder)
   return identity.person_id
 }
 
-function orderSettlement(order: PaidOrder): Settlement {
-  const s = order.metadata?.interfacer_settlement as Settlement | undefined
-  if (!s || typeof s.stripe_account_id !== "string" || !Number.isInteger(s.fee_bps) ||
-      !Number.isInteger(s.fee_fixed_cents)) refuse("order_settlement_terms_missing")
-  return s!
-}
+// ---- capture ----
 
-// ---- payouts ----
+const settlementLock = <T>(container: MedusaContainer, orderId: string, work: () => Promise<T>) =>
+  integrationOf(container).withProjectionLock("interfacer-settlement:" + orderId, work)
 
-// Called right after a milestone receipt exists (and by the job, to heal a
-// crash in between). Idempotent: one payout per order, amounts from the order's
-// frozen terms and what is still paid after earlier refunds.
-export async function ensurePayout(container: MedusaContainer, orderId: string, milestoneAt: Date) {
-  const s = paymentSettings()
-  const integration = integrationOf(container)
-  const [existing] = await integration.listPayouts({ order_id: orderId })
-  if (existing) return existing
+async function captureOrderPayment(container: MedusaContainer, orderId: string) {
   const order = await readPaidOrder(container, orderId)
   const payment = orderPayment(order)
-  if (payment.provider_id !== STRIPE_PROVIDER_ID) return undefined // test payments: nothing to pay out
-  const terms = orderSettlement(order)
-  const { seller_person_id } = await sellerOfOrder(container, order)
-  if (terms.seller_person_id !== seller_person_id) refuse("order_settlement_seller_mismatch")
-  const split = settlementSplit(toCents(payment.amount), terms)
-  const intent = String((payment.data as any)?.id ?? "")
-  if (!/^pi_[A-Za-z0-9]+$/.test(intent)) refuse("stripe_payment_intent_missing")
-  const now = new Date()
-  return integration.createPayouts({
-    order_id: orderId, seller_person_id, stripe_account_id: terms.stripe_account_id,
-    payment_intent_id: intent, charge_id: typeof (payment.data as any)?.latest_charge === "string"
-      ? (payment.data as any).latest_charge : null,
-    currency_code: order.currency_code, ...split, terms_version: terms.terms_version,
-    release_at: addDays(milestoneAt, s.hold_days), next_attempt_at: now,
-  } as any)
+  if (order.status === "canceled" || payment.canceled_at) refuse("interfacer_order_canceled")
+  if (payment.captured_at) return
+  try {
+    await capturePaymentWorkflow(container).run({ input: { payment_id: payment.id } })
+  } catch (error) {
+    // Stripe released the authorization (7 days) or the buyer's bank refused.
+    if (isStripePayment(payment)) refuse("payment_authorization_expired")
+    throw error
+  }
 }
 
-const OPEN_CASE = ["requested", "accepted", "returned"]
+// When the buyer's capture step runs: builds are captured now (production can
+// outlast an authorization); Stripe stock orders wait for the delivery.
+export async function captureAtCheckout(container: MedusaContainer, orderId: string): Promise<boolean> {
+  const order = await readPaidOrder(container, orderId)
+  const payment = orderPayment(order)
+  if (!marketProviderIds().has(payment.provider_id) || payment.canceled_at) refuse("demo_manual_payment_required")
+  if (isStripePayment(payment) && (await sellerOfOrder(container, order)).kind === "stock") return false
+  await settlementLock(container, orderId, () => captureOrderPayment(container, orderId))
+  return true
+}
 
-export type PayoutRun = "transferred" | "held" | "canceled" | "retry" | "blocked" | "skipped"
-
-// Transfer one payout if it is due. Runs under the order's settlement lock, so
-// it never races a refund on the same order.
-export async function advancePayout(container: MedusaContainer, payoutId: string, now = new Date()): Promise<PayoutRun> {
-  const integration = integrationOf(container)
-  const first = await integration.retrievePayout(payoutId)
-  return integration.withProjectionLock("interfacer-settlement:" + first.order_id, async () => {
-    const payout = await integration.retrievePayout(payoutId) as any
-    if (payout.status !== "held") return "skipped"
-    if (new Date(payout.release_at) > now) return "held"
-    const open = await integration.listAfterSaleCases({ order_id: payout.order_id, status: OPEN_CASE })
-    if (open.length) return "held"
-    const order = await readPaidOrder(container, payout.order_id)
-    const payment = orderPayment(order)
-    const amount = remainingNet(payout, refundedCents(payment))
-    if (order.status === "canceled" || amount <= 0) {
-      await integration.updatePayouts({ id: payout.id, status: "canceled", last_error: null } as any)
-      return "canceled"
-    }
-    const api = stripeApi()
-    try {
-      // Reconcile before any (re-)send: a transfer for this order may already
-      // exist from an attempt whose response was lost.
-      const prior = (await api.transfers.list({ transfer_group: payout.order_id, limit: 10 })).data
-        .filter(t => t.metadata?.interfacer_payout_id === payout.id && !t.reversed)
-      let transfer = prior[0]
-      if (prior.length > 1) throw Object.assign(new Error("payout_duplicate_transfers"), { blocked: true })
-      if (!transfer) {
-        const charge = await chargeOf(api, payout.payment_intent_id, payout.charge_id)
-        transfer = await api.transfers.create({
-          amount, currency: payout.currency_code, destination: payout.stripe_account_id,
-          source_transaction: charge, transfer_group: payout.order_id,
-          description: `Interfacer marketplace order ${payout.order_id}`,
-          metadata: { interfacer_payout_id: payout.id, interfacer_order_id: payout.order_id },
-        }, { idempotencyKey: `interfacer-payout:${payout.id}:${amount}` })
-      }
-      if (transfer.destination !== payout.stripe_account_id && (transfer.destination as any)?.id !== payout.stripe_account_id)
-        throw Object.assign(new Error("payout_transfer_destination_mismatch"), { blocked: true })
-      await integration.updatePayouts({ id: payout.id, status: "transferred", transfer_id: transfer.id,
-        transferred_cents: transfer.amount, attempts: payout.attempts + 1, last_error: null } as any)
-      return "transferred"
-    } catch (error) {
-      const blocked = (error as { blocked?: boolean }).blocked
-      const attempts = payout.attempts + 1
-      const delay = Math.min(60_000 * 2 ** Math.min(attempts, 10), 6 * 3_600_000)
-      await integration.updatePayouts({ id: payout.id, attempts, ...(blocked ? { status: "blocked" } : {}),
-        next_attempt_at: new Date(now.getTime() + delay),
-        last_error: String((error as Error)?.message ?? error).slice(0, 500) } as any)
-      return blocked ? "blocked" : "retry"
-    }
+// Before a delivery/production milestone. A pending cancellation request must
+// be answered first (accepting it cancels the order). Stock with Stripe: the
+// payment is captured here, as the seller hands the item over; anything else
+// must already be captured.
+export async function assertMilestoneAllowed(container: MedusaContainer, orderId: string, kind: "stock" | "build") {
+  await settlementLock(container, orderId, async () => {
+    const open = await integrationOf(container).listAfterSaleCases({ order_id: orderId, kind: "cancellation",
+      status: ["requested"] })
+    if (open.length) refuse("aftersale_cancellation_pending")
+    if (!paymentSettings().stripe) return
+    const payment = orderPayment(await readPaidOrder(container, orderId))
+    if (!marketProviderIds().has(payment.provider_id)) refuse("captured_payment_required")
+    if (kind === "stock") return captureOrderPayment(container, orderId)
+    if (!payment.captured_at || payment.canceled_at) refuse("captured_payment_required")
   })
 }
 
-// The scheduled job: heal missing payouts, then transfer the due ones.
-export async function runDuePayouts(container: MedusaContainer, now = new Date()) {
-  if (!paymentSettings().stripe) return { created: 0, transferred: 0 }
-  const integration = integrationOf(container)
-  let created = 0, transferred = 0
-  // Recent milestones whose payout row was not written (crash between the two).
-  const receipts = await integration.listReaReceipts({ created_at: { $gte: addDays(now, -2) } } as any,
-    { take: 200, order: { created_at: "DESC" } })
-  const have = new Set((await integration.listPayouts({ order_id: receipts.map(r => r.order_id) },
-    { take: receipts.length || 1 })).map(p => p.order_id))
-  for (const receipt of receipts) {
-    if (have.has(receipt.order_id)) continue
-    try { if (await ensurePayout(container, receipt.order_id, new Date(receipt.has_point_in_time))) created++ }
-    catch { /* legacy or test-paid orders have no payout */ }
+// ---- lapsed authorizations (job) ----
+
+// A Stripe stock order not delivered within the authorization's lifetime: once
+// Stripe has released the money, the order is canceled natively (its unit is
+// for sale again) and any open request on it is closed.
+export async function cancelLapsedAuthorizations(container: MedusaContainer, now = new Date()) {
+  if (!paymentSettings().stripe) return 0
+  const payments = container.resolve(Modules.PAYMENT)
+  const stale = await payments.listPayments({ provider_id: STRIPE_PROVIDER_ID, captured_at: null, canceled_at: null } as any,
+    { take: 100, order: { created_at: "ASC" } })
+  let canceled = 0
+  for (const p of stale as any[]) {
+    if (new Date(p.created_at) > addDays(now, -(AUTHORIZATION_DAYS - 1))) continue
+    const account = String(p.data?.stripe_account ?? ""), id = String(p.data?.id ?? "")
+    let status: string
+    try { status = (await stripeApi().paymentIntents.retrieve(id, {}, { stripeAccount: account })).status }
+    catch { continue }
+    if (status !== "canceled") continue
+    const { data: [collection] } = await queryOf(container).graph({ entity: "payment_collection",
+      filters: { id: p.payment_collection_id }, fields: ["id", "order.id"] })
+    const orderId = (collection as any)?.order?.id
+    if (!orderId) continue
+    await settlementLock(container, orderId, async () => {
+      const order = await readPaidOrder(container, orderId)
+      if (order.status !== "canceled")
+        await cancelOrderWorkflow(container).run({ input: { order_id: orderId, canceled_by: "interfacer-authorization-expired" } })
+      const integration = integrationOf(container)
+      for (const c of await integration.listAfterSaleCases({ order_id: orderId, status: ["requested", "accepted"] }))
+        await integration.updateAfterSaleCases({ id: c.id, status: "withdrawn", closed_at: new Date(),
+          seller_note: "Order canceled: the payment authorization expired before delivery." } as any)
+    })
+    canceled++
   }
-  const due = await integration.listPayouts({ status: "held", release_at: { $lte: now }, next_attempt_at: { $lte: now } } as any,
-    { take: 50, order: { release_at: "ASC" } })
-  for (const payout of due) if (await advancePayout(container, payout.id, now) === "transferred") transferred++
-  return { created, transferred }
+  return canceled
 }
 
 export { SYSTEM_PROVIDER_ID, STRIPE_PROVIDER_ID }
-
-// The seller a checkout's money goes to, from the immutable evidence.
-export function evidenceSeller(evidence: { kind: "stock" | "build"; lines: { binding?: { seller_agent_id: string } }[];
-  purchase: { build?: { service_provider_person_id?: string } } }): string {
-  const seller = evidence.kind === "stock" ? evidence.lines[0]?.binding?.seller_agent_id
-    : evidence.purchase.build?.service_provider_person_id
-  if (!seller || (evidence.kind === "stock" && evidence.lines.some(l => l.binding?.seller_agent_id !== seller)))
-    refuse("one_seller_per_order_required")
-  return seller!
-}
-
-// A marketplace cart pays only through the marketplace's provider: with real
-// payments on, a test (system) session must never complete an order.
-export function requireMarketPaymentSessions(cart: { payment_collection?: { payment_sessions?: { provider_id: string }[] } | null }) {
-  const sessions = cart.payment_collection?.payment_sessions ?? []
-  const allowed = marketProviderIds()
-  if (!sessions.length || sessions.some(s => !allowed.has(s.provider_id))) refuse("payment_provider_not_allowed")
-}
-
-// The region offers exactly the marketplace's provider: Stripe when real
-// payments are on (the test provider is removed), else the system provider.
-export async function ensureRegionPaymentProvider(container: MedusaContainer, region_id: string) {
-  const wanted = paymentSettings().provider_id
-  const { data: [region] } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
-    entity: "region", fields: ["id", "payment_providers.id"], filters: { id: region_id },
-  })
-  const ids = (region?.payment_providers ?? []).map((p: { id: string }) => p.id)
-  if (ids.length !== 1 || ids[0] !== wanted) {
-    const { updateRegionsWorkflow } = await import("@medusajs/medusa/core-flows")
-    await updateRegionsWorkflow(container).run({ input: { selector: { id: region_id },
-      update: { payment_providers: [wanted] } } })
-  }
-  return wanted
-}
-
-// Before a delivery/production milestone: real payments must be captured, and
-// a pending cancellation request must be answered first (accepting it cancels
-// the order; delivering instead would silently ignore the buyer).
-export async function assertMilestoneAllowed(container: MedusaContainer, orderId: string) {
-  const order = await readPaidOrder(container, orderId)
-  if (paymentSettings().stripe) requireCapturedMarketPayment(order)
-  const open = await integrationOf(container).listAfterSaleCases({ order_id: orderId, kind: "cancellation",
-    status: ["requested"] })
-  if (open.length) refuse("aftersale_cancellation_pending")
-}
-
-// After the milestone receipt exists. A failure here is healed by the job.
-export async function afterMilestone(container: MedusaContainer, orderId: string, at: Date) {
-  if (!paymentSettings().stripe) return
-  try { await ensurePayout(container, orderId, at) }
-  catch (error) { console.warn(`[interfacer] payout for ${orderId} deferred: ${(error as Error).message}`) }
-}
-
-// Medusa 2.10.3 reserves the unit before it authorizes the payment, and a
-// failed authorization leaves the inventory level's reserved_quantity behind
-// (no reservation row left to release it): a one-unit listing would be
-// unsellable after one declined or unconfirmed card. So the cart is completed
-// only once Stripe says the PaymentIntent is authorized (or already paid).
-export async function requireAuthorizedStripePayment(container: MedusaContainer, cartId: string) {
-  if (!paymentSettings().stripe) return
-  const { data: [cart] } = await container.resolve(ContainerRegistrationKeys.QUERY).graph({
-    entity: "cart", filters: { id: cartId }, fields: ["id", "payment_collection.payment_sessions.*"],
-  })
-  const sessions = (cart as any)?.payment_collection?.payment_sessions ?? []
-  for (const session of sessions) {
-    if (session.provider_id !== STRIPE_PROVIDER_ID) continue
-    const id = String(session.data?.id ?? "")
-    if (!/^pi_[A-Za-z0-9]+$/.test(id)) refuse("payment_not_authorized")
-    const intent = await stripeApi().paymentIntents.retrieve(id)
-    if (!["requires_capture", "succeeded"].includes(intent.status)) refuse("payment_not_authorized")
-  }
-}

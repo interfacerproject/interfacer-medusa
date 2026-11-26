@@ -78,8 +78,11 @@ export async function publicScene(req: MedusaRequest) {
 // How buyers pay and what sellers keep: public facts only (no secret key).
 export function publicPayments() {
   const s = paymentSettings()
-  return { provider: s.provider, provider_id: s.provider_id, terms: s.terms, hold_days: s.hold_days,
-    return_window_days: s.return_window_days,
+  // Stripe: direct charges on the seller's account (Stripe.js needs that account
+  // id, which the payment route returns); stock is charged at delivery.
+  return { provider: s.provider, provider_id: s.provider_id, terms: s.terms,
+    return_window_days: s.return_window_days, ...(s.stripe ? { charges: "direct", capture: { stock: "delivery",
+      build: "order" }, authorization_days: 7 } : {}),
     ...(s.stripe ? { publishable_key: s.stripe.publishable_key,
       live: s.stripe.publishable_key.startsWith("pk_live_") } : {}) }
 }

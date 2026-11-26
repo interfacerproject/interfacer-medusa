@@ -1,5 +1,5 @@
 // The order's after-sale state for its buyer or its seller (nobody else):
-// cases, refunds, what they may do now; the seller also sees the payout.
+// cases, refunds and what they may do now.
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { allowMarketStorefront } from "../../../../market-guard"
 import { buyerScene } from "../../../../../storefront/dev"

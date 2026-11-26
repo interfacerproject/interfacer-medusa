@@ -7,7 +7,8 @@ import { allowLocalRequest } from "./dev/interfacer/local-guard"
 import { allowStorefront } from "../storefront/dev"
 import { checkoutEvidence, refuse } from "../modules/interfacer/checkout-guard"
 import { allowMarketRequest, allowMarketStorefront, pilotProxyOnly } from "./market-guard"
-import { checkoutSettlement, evidenceSeller, requireAuthorizedStripePayment } from "../modules/interfacer/settlement"
+import { checkoutSettlement, evidenceSeller, verifyStripePayment } from "../modules/interfacer/settlement"
+import { STRIPE_PROVIDER_ID } from "../modules/interfacer/payments"
 
 import { authFromHeader, AUTH_HEADER, checkoutOperationParams } from "../modules/interfacer/signed-envelope"
 
@@ -23,7 +24,8 @@ async function prepareCheckout(req: MedusaRequest, _res: MedusaResponse, next: M
       // Real payments: the seller must be able to receive the money, under the
       // commission terms they signed. Frozen on the order from here on.
       const settlement = await checkoutSettlement(req.scope, evidenceSeller(evidence as any))
-      if (!cart.completed_at) await requireAuthorizedStripePayment(req.scope, cart.id)
+      // On Stripe: authorized, on this seller's account, for this total and fee.
+      if (!cart.completed_at) await verifyStripePayment(req.scope, cart.id, settlement)
       // Written before completeCartWorkflow takes its snapshot. Native cart->order
       // conversion copies line metadata and cart metadata in Medusa 2.10.3.
       if (!cart.completed_at) {
@@ -40,6 +42,14 @@ async function prepareCheckout(req: MedusaRequest, _res: MedusaResponse, next: M
   } catch (error) { next(error) }
 }
 
+// Stripe sessions carry the seller's account and the commission: only the
+// marketplace route (/market/store/payment) may create them, never a client.
+function nativeStripeSessionRefused(req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) {
+  if ((req.body as { provider_id?: unknown } | undefined)?.provider_id === STRIPE_PROVIDER_ID)
+    return void res.status(400).json({ type: "not_allowed", message: "use_market_payment_route" })
+  next()
+}
+
 type Guard = (req: MedusaRequest, res: MedusaResponse) => boolean
 const guarded = (allow: Guard) => (req: MedusaRequest, res: MedusaResponse, next: MedusaNextFunction) => {
   if (allow(req, res)) next()
@@ -54,6 +64,12 @@ export default defineMiddlewares({ routes: [{
 }, {
   // Stripe webhooks reach a pilot through the GUI's raw-body relay only.
   matcher: "/hooks/*", middlewares: [pilotProxyOnly],
+}, {
+  matcher: "/store/payment-collections/:id/payment-sessions", method: "POST",
+  middlewares: [nativeStripeSessionRefused],
+}, {
+  matcher: "/market/store/payment", method: "POST",
+  middlewares: [storefront, authenticate("customer", ["session", "bearer"])],
 }, {
   matcher: "/market/store/payouts", method: "GET",
   middlewares: [storefront, authenticate("customer", ["bearer"])],
