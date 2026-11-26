@@ -11,8 +11,11 @@ import { BuildOffer, BuildAcceptance } from "./models/build-offer"
 import { ZenflowsSync } from "./models/zenflows-sync"
 import { CatalogEntry } from "./models/catalog-entry"
 import { BuildListing } from "./models/build-listing"
+import { SellerAccount, Payout } from "./models/settlement"
+import { AfterSaleCase, Refund } from "./models/aftersale"
 
-export default class InterfacerService extends MedusaService({ ListingBinding, ProjectionIntent, IdentityLink, ReaReceipt, Design, Service, BuildQuote, BuildOffer, BuildAcceptance, ZenflowsSync, CatalogEntry, BuildListing }) {
+export default class InterfacerService extends MedusaService({ ListingBinding, ProjectionIntent, IdentityLink, ReaReceipt, Design, Service, BuildQuote, BuildOffer, BuildAcceptance, ZenflowsSync, CatalogEntry, BuildListing,
+  SellerAccount, Payout, AfterSaleCase, Refund }) {
   // Session-scoped lock spans independent Medusa workflow transactions.
   // Only advisory locking here: never SQL-write a Medusa commerce table.
   async withProjectionLock<T>(key: string, work: () => Promise<T>): Promise<T> {

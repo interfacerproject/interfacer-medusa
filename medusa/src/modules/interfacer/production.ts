@@ -9,6 +9,7 @@ import { buildReferences, buildRefuse, readBuildQuote } from "./build-purchase"
 import { termsHash } from "./matching"
 import { zenflowsConfig } from "./zenflows-event"
 import { readInstance } from "./zenflows-registry"
+import { afterMilestone, assertMilestoneAllowed, marketProviderIds } from "./settlement"
 import { enqueueMilestone, resumeMilestone, runZenflowsSyncSafely, withSync, type MilestoneInput } from "./zenflows-outbox"
 
 // Explicit admin/supplier "produced" assertion, not a payment subscriber and not
@@ -49,10 +50,11 @@ export async function produceBuild(container: MedusaContainer, orderId: string, 
     // Manual upfront payment must actually have been captured, not merely
     // authorized. Native capture remains a financial action with no REA write.
     const payments = order.payment_collections?.flatMap((p: { payments?: { provider_id: string; captured_at?: string; canceled_at?: string; amount: unknown }[] }) => p.payments ?? []) ?? []
-    if (payments.length !== 1 || payments[0].provider_id !== "pp_system_default" ||
+    if (payments.length !== 1 || !marketProviderIds().has(payments[0].provider_id) ||
         !payments[0].captured_at || payments[0].canceled_at ||
         Number(payments[0].amount) !== quote.total_price_cents / 100) buildRefuse("build_upfront_payment_required")
     const [previous] = await integration.listReaReceipts({ order_id: orderId })
+    if (!previous) await assertMilestoneAllowed(container, orderId)
     // A retry reuses the persisted milestone time, so its payload hashes identically.
     const has_point_in_time = previous ? new Date(previous.has_point_in_time) : new Date()
     // Live: the registered service owner produces and hands over; the produced
@@ -70,7 +72,10 @@ export async function produceBuild(container: MedusaContainer, orderId: string, 
       provider: cfg ? quote.provider_person_id : undefined,
       unit,
     }
-    if (previous) return { created: false, ...await resumeMilestone(integration, previous, milestone) }
+    if (previous) {
+      await afterMilestone(container, orderId, new Date(previous.has_point_in_time))
+      return { created: false, ...await resumeMilestone(integration, previous, milestone) }
+    }
     // Durable outbox (see delivery.ts): Process -> produce -> transfer run after
     // the receipt and its pending sync row have committed together.
     const { receipt, sync } = await enqueueMilestone(integration, {
@@ -80,6 +85,7 @@ export async function produceBuild(container: MedusaContainer, orderId: string, 
       quote_id: quote.id, quote_hash: quote.quote_hash,
       order_id: orderId, quantity: quote.quantity, has_point_in_time,
     }, milestone)
+    await afterMilestone(container, orderId, has_point_in_time)
     // Re-read after commit: the in-transaction DTO lacks DB-committed fields, and
     // retries/listings must see byte-identical receipts.
     if (!sync) return { created: true, receipt: await integration.retrieveReaReceipt(receipt.id) }

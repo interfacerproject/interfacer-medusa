@@ -8,6 +8,7 @@ import { requireCommerceMode } from "./deployment"
 import { LIVE_POLICY } from "./live-listing"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
+import { afterMilestone, assertMilestoneAllowed } from "./settlement"
 import { enqueueMilestone, resumeMilestone, runZenflowsSyncSafely, withSync, type MilestoneInput } from "./zenflows-outbox"
 
 function refuse(reason: string): never {
@@ -87,6 +88,8 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
     const { line, binding, identity } = await receiptFacts(container, order)
     await verifyCommerceOperation(auth, "commerce.order.deliver", { order_id: orderId }, binding.seller_agent_id)
     if (line.requires_shipping) refuse("interfacer_local_collection_only")
+    const [previousReceipt] = await integration.listReaReceipts({ order_id: orderId })
+    if (!previousReceipt) await assertMilestoneAllowed(container, orderId)
     let active = (order.fulfillments ?? []).filter(f => !f.canceled_at)
     if (active.length > 1) refuse("interfacer_fulfillment_reconciliation_required")
     if (!active.length) {
@@ -130,7 +133,10 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
       ...(live ? { provider: binding.seller_agent_id, unit: binding.zenflows_unit_id ?? undefined,
         source_resource_id: binding.catalog_resource_id } : {}),
     }
-    if (previous) return { created: false, ...await resumeMilestone(integration, previous, milestone) }
+    if (previous) {
+      await afterMilestone(container, orderId, new Date(previous.has_point_in_time))
+      return { created: false, ...await resumeMilestone(integration, previous, milestone) }
+    }
     // Durable outbox: receipt + pending Zenflows sync commit first, then the
     // live write runs (inline here, else the scheduled job). A failed or lost
     // remote step stays pending and is reconciled, never blindly replayed.
@@ -139,6 +145,8 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
       resource_id: binding.catalog_resource_id, dpp_id: binding.source_dpp_id,
       order_id: orderId, quantity: Number(line.quantity), has_point_in_time,
     }, milestone)
+    // The seller's share becomes payable (after the hold period).
+    await afterMilestone(container, orderId, has_point_in_time)
     // Re-read after commit: the in-transaction DTO lacks DB-committed fields, and
     // retries/listings must see byte-identical receipts.
     if (!sync) return { created: true, receipt: await integration.retrieveReaReceipt(receipt.id) }

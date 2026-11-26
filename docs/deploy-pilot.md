@@ -83,6 +83,9 @@ Day-to-day checks, outbox rows, backups and incidents: [pilot-runbook.md](pilot-
   Pending rows are retried every minute by the scheduled job; a buyer or the
   seller can also retry from the order page. Blocked rows need a person: see
   the row's `last_error` and search Zenflows notes for its `marker`.
+- Money (with Stripe): payouts, pending refunds and open after-sale requests:
+  `docker compose exec medusa interfacer-medusa exec ./src/scripts/money-report.js`
+  (see [payments-and-aftersale.md](payments-and-aftersale.md#operating-it)).
 - Admin over a tunnel: `ssh -L 9100:127.0.0.1:9100 <host>`, then
   http://localhost:9100/app (image built with the admin), user created with
   `docker compose exec medusa npx medusa user -e <email> -p <password>`.
@@ -94,5 +97,7 @@ Day-to-day checks, outbox rows, backups and incidents: [pilot-runbook.md](pilot-
 
 - One Medusa process: login challenges are kept in memory, so a restart only
   asks people to sign in again. Two replicas would need shared challenges.
-- Test payments only (`pp_system_default`, captured by the buyer's signature).
+- Test payments (`pp_system_default`, captured by the buyer's signature) unless
+  Stripe is configured: see [payments-and-aftersale.md](payments-and-aftersale.md)
+  (a live key in a pilot also needs `INTERFACER_LIVE_PAYMENTS=true`).
 - Medusa uses its in-memory event bus and Postgres locking (no Redis).

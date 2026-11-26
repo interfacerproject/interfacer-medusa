@@ -8,6 +8,8 @@ import { buyerScene } from "../../../../storefront/dev"
 import { INTERFACER_MODULE } from "../../../../modules/interfacer"
 import type InterfacerService from "../../../../modules/interfacer/service"
 import { withSync } from "../../../../modules/interfacer/zenflows-outbox"
+import { openCasesFor } from "../../../../modules/interfacer/aftersale"
+import { publicPayout } from "../../../../modules/interfacer/settlement"
 
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   if (!allowMarketStorefront(req, res)) return
@@ -46,9 +48,14 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const ids = orders.map(o => o.id as string)
   const receipts = ids.length ? await integration.listReaReceipts({ order_id: ids }, { take: ids.length }) : []
   const syncs = ids.length ? await integration.listZenflowsSyncs({ order_id: ids }, { take: ids.length }) : []
+  const payouts = ids.length ? await integration.listPayouts({ order_id: ids }, { take: ids.length }) : []
+  const cases = await openCasesFor(req.scope, person)
   for (const order of orders) {
     const receipt = receipts.find(r => r.order_id === order.id)
     order.receipt = receipt ? withSync(receipt, syncs.find(s => s.order_id === order.id) as any) : null
+    const payout = payouts.find(p => p.order_id === order.id)
+    order.payout = payout ? publicPayout(payout) : null
+    order.open_case = cases.find(c => c.order_id === order.id) ?? null
   }
-  res.json({ person, listings, catalog, orders })
+  res.json({ person, listings, catalog, orders, cases })
 }

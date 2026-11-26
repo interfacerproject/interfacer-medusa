@@ -1,10 +1,14 @@
 import { defineConfig, loadEnv } from "@medusajs/framework/utils"
 import { DEV_GUI_ORIGINS } from "./src/dev-origins"
 import { assertDeploymentConfig } from "./src/modules/interfacer/deployment"
+import { assertPaymentConfig, paymentSettings } from "./src/modules/interfacer/payments"
 
 loadEnv(process.env.NODE_ENV || "development", process.cwd())
 // A pilot refuses to start (or migrate) with a missing secret or a fixture switch.
 assertDeploymentConfig()
+// Real payments are opt-in (STRIPE_SECRET_KEY); a half-configured Stripe refuses to start.
+assertPaymentConfig()
+const stripe = paymentSettings().stripe
 
 module.exports = defineConfig({
   projectConfig: {
@@ -26,6 +30,18 @@ module.exports = defineConfig({
   admin: { disable: process.env.MEDUSA_ADMIN !== "true" },
   modules: [
     { resolve: "./src/modules/interfacer" },
+    // Stripe (Connect): the buyer pays the platform, sellers are paid out later.
+    // Authorize at checkout, capture once the order exists: a refused order
+    // never leaves a captured payment behind (its authorization is released).
+    ...(stripe ? [{
+      resolve: "@medusajs/medusa/payment",
+      options: { providers: [{ resolve: "./src/modules/stripe-payment", id: "stripe", options: {
+        apiKey: stripe.secret_key, webhookSecret: stripe.webhook_secret,
+        capture: false, automaticPaymentMethods: true,
+        paymentDescription: "Interfacer marketplace order",
+        ...(stripe.api_base ? { apiBase: stripe.api_base } : {}),
+      } }] },
+    }] : []),
     {
       resolve: "@medusajs/medusa/fulfillment",
       options: { providers: [{ resolve: "@medusajs/medusa/fulfillment-manual", id: "manual" }] },

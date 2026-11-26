@@ -13,6 +13,8 @@ import { readBuildQuote } from "../modules/interfacer/build-purchase"
 import { LIVE_POLICY } from "../modules/interfacer/live-listing"
 import { commerceAudience, pilotMode } from "../modules/interfacer/deployment"
 import { commerceContext } from "../modules/interfacer/commerce-context"
+import { checkoutSettlement, evidenceSeller } from "../modules/interfacer/settlement"
+import { paymentSettings } from "../modules/interfacer/payments"
 
 export const DEMO_FILE = resolve(__dirname, "../../../.tmp/storefront-demo.json")
 // Standalone: a disposable fixture buyer + fixture listings. Live (a Zenflows
@@ -69,8 +71,17 @@ export async function liveProducts(req: MedusaRequest): Promise<Demo["products"]
 // What the GUI may know before login. Live mode never discloses a login.
 export async function publicScene(req: MedusaRequest) {
   const scene = await sceneBase(req)
-  if (!scene.live) return scene
-  return { label: scene.label, run: scene.run, live: true, context: scene.context, products: await liveProducts(req) }
+  if (!scene.live) return { ...scene, payments: publicPayments() }
+  return { label: scene.label, run: scene.run, live: true, context: scene.context, products: await liveProducts(req),
+    payments: publicPayments() }
+}
+// How buyers pay and what sellers keep: public facts only (no secret key).
+export function publicPayments() {
+  const s = paymentSettings()
+  return { provider: s.provider, provider_id: s.provider_id, terms: s.terms, hold_days: s.hold_days,
+    return_window_days: s.return_window_days,
+    ...(s.stripe ? { publishable_key: s.stripe.publishable_key,
+      live: s.stripe.publishable_key.startsWith("pk_live_") } : {}) }
 }
 // Per-request scene keeps the catalog/supplier fixture boundary but derives the
 // buyer from the authenticated native Medusa account and immutable identity link.
@@ -119,6 +130,8 @@ export async function demoSigningOperation(req: MedusaRequest, scene: Demo) {
       const quote = await readBuildQuote(req.scope.resolve<InterfacerService>(INTERFACER_MODULE), b.quoteId)
       if (scene.live) { if (quote.provider_person_id === scene.buyer_person_id) refuse("self_purchase_forbidden") }
       else if (!["p4-demo-provider-standard", "p4-demo-provider-large"].includes(quote.provider_person_id)) refuse("demo_provider_required")
+      // Before the buyer authorizes any payment: the maker must be payable.
+      await checkoutSettlement(req.scope, quote.provider_person_id)
       return { op: "commerce.order.build.purchase", params: { cart_id: cart.id, quote_id: quote.id }, person: scene.buyer_person_id }
     }
     const evidence = await checkoutEvidence(req.scope, cart)
@@ -126,6 +139,9 @@ export async function demoSigningOperation(req: MedusaRequest, scene: Demo) {
     if (evidence.kind === "stock" && cart.items?.some(i => !scene.products.some(p => p.variant_id === i.variant_id))) refuse("demo_product_required")
     if (evidence.kind === "stock" && cart.items?.some(i => scene.products.some(p => p.variant_id === i.variant_id &&
         p.seller_person_id === scene.buyer_person_id))) refuse("self_purchase_forbidden")
+    // Also the GUI's pre-payment check: refuses before the buyer authorizes a
+    // card payment for a seller who cannot be paid.
+    await checkoutSettlement(req.scope, evidenceSeller(evidence as any))
     return { op: "commerce.order.authorize", params: checkoutOperationParams(cart, evidence.purchase), person: scene.buyer_person_id }
   }
   if (["deliver", "produce", "capture"].includes(action ?? "")) {
