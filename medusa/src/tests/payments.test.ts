@@ -4,7 +4,7 @@ import {
   paymentConfigProblems, paymentSettings, platformFee, STRIPE_PROVIDER_ID, SYSTEM_PROVIDER_ID,
 } from "../modules/interfacer/payments"
 import { caseEligibility, nextCaseStatus, type OrderFacts } from "../modules/interfacer/aftersale"
-import { connectStatus, setStripeApiForTests, stripeOptions } from "../modules/interfacer/stripe-connect"
+import { connectStatus, createConnectAccount, setStripeApiForTests, stripeOptions } from "../modules/interfacer/stripe-connect"
 import { verifyStripePayment } from "../modules/interfacer/settlement"
 import DirectProvider, { sessionStatus, toMinor } from "../modules/stripe-payment/service"
 import { BigNumber } from "@medusajs/framework/utils"
@@ -192,7 +192,8 @@ async function verify(intent: Record<string, unknown>, session: Record<string, u
   const asked: unknown[][] = []
   setStripeApiForTests({ paymentIntents: { retrieve: async (...args: unknown[]) => { asked.push(args); return {
     id: "pi_1", amount: 1995, currency: "eur", capture_method: "manual", application_fee_amount: 160,
-    status: "requires_capture", ...intent } as any } }, accounts: {} as any, accountLinks: {} as any })
+    status: "requires_capture", ...intent } as any } }, accounts: {} as any, accountLinks: {} as any,
+    createAccountV2: async () => { throw new Error("not used") } })
   const saved = process.env.STRIPE_SECRET_KEY
   process.env.STRIPE_SECRET_KEY = "sk_test_x"
   try { await verifyStripePayment(container, "cart_1", SETTLEMENT) }
@@ -220,4 +221,17 @@ test("direct charge: amounts arrive as numbers, strings or BigNumbers and become
   assert.equal(toMinor(new BigNumber(19.95), "eur"), 1995)
   assert.equal(toMinor({ value: "5", precision: 20 }, "eur"), 500)
   assert.throws(() => toMinor("x", "eur"), /invalid_amount/)
+})
+
+test("a seller's Standard account is opened through Accounts v2, once per person", async () => {
+  // Stripe refuses v1 account creation (POST /v1/accounts) for new Connect platforms.
+  const calls: unknown[][] = []
+  const api = { createAccountV2: async (...args: unknown[]) => { calls.push(args); return { id: "acct_V2" } } } as any
+  assert.deepEqual(await createConnectAccount(api, "P1", "it", "interfacer-seller-account:P1"), { id: "acct_V2" })
+  assert.deepEqual(calls, [[{
+    identity: { country: "IT" }, dashboard: "full",
+    configuration: { merchant: { capabilities: { card_payments: { requested: true } } } },
+    defaults: { responsibilities: { fees_collector: "stripe", losses_collector: "stripe" } },
+    metadata: { interfacer_person_id: "P1" },
+  }, "interfacer-seller-account:P1"]])
 })

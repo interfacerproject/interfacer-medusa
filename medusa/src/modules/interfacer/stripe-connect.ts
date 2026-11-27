@@ -9,9 +9,12 @@ import { paymentSettings } from "./payments"
 // The narrow slice of the Stripe SDK this module uses (also what tests fake).
 export type StripeApi = {
   accounts: {
-    create(params: Stripe.AccountCreateParams, options?: Stripe.RequestOptions): Promise<Stripe.Account>
     retrieve(id: string): Promise<Stripe.Account>
   }
+  // Accounts v2 (POST /v2/core/accounts). Stripe refuses v1 account creation
+  // for new Connect platforms; the account it makes is read, linked and charged
+  // through the v1 API like any other. (stripe-node 15 has no v2 client.)
+  createAccountV2(params: Record<string, unknown>, idempotencyKey: string): Promise<{ id: string }>
   accountLinks: { create(params: Stripe.AccountLinkCreateParams): Promise<Stripe.AccountLink> }
   paymentIntents: {
     retrieve(id: string, params?: Stripe.PaymentIntentRetrieveParams,
@@ -38,7 +41,11 @@ export function stripeApi(): StripeApi {
   const s = paymentSettings().stripe
   if (!s) throw new Error("stripe_not_configured")
   const key = s.secret_key + "|" + (s.api_base ?? "")
-  if (cached?.key !== key) cached = { key, api: new Stripe(s.secret_key, stripeOptions(s.api_base)) as unknown as StripeApi }
+  if (cached?.key !== key) {
+    const api = new Stripe(s.secret_key, stripeOptions(s.api_base)) as unknown as StripeApi
+    api.createAccountV2 = (params, idempotencyKey) => createAccountV2(s.secret_key, s.api_base, params, idempotencyKey)
+    cached = { key, api }
+  }
   return cached.api
 }
 
@@ -68,12 +75,37 @@ export function connectStatus(account: Stripe.Account): ConnectStatus {
 // A Standard account: the seller's own, full Stripe account. They are the
 // merchant of record, pay Stripe's fees, handle disputes and see everything
 // in their own dashboard (https://dashboard.stripe.com).
-export async function createConnectAccount(api: StripeApi, person_id: string, country: string, idempotencyKey: string) {
-  return api.accounts.create({
-    type: "standard",
-    country: country.toUpperCase(),
+// The API version the v2 requests are made with (v2 requires one).
+export const STRIPE_V2_VERSION = "2026-11-18.endive"
+
+async function createAccountV2(secret: string, apiBase: string | undefined, params: Record<string, unknown>,
+  idempotencyKey: string): Promise<{ id: string }> {
+  const res = await fetch(new URL("/v2/core/accounts", apiBase ?? "https://api.stripe.com"), {
+    method: "POST",
+    headers: { authorization: `Bearer ${secret}`, "content-type": "application/json",
+      "stripe-version": STRIPE_V2_VERSION, "idempotency-key": idempotencyKey },
+    body: JSON.stringify(params),
+  })
+  const json = await res.json().catch(() => ({})) as { id?: string; error?: { message?: string } }
+  if (!res.ok || typeof json.id !== "string") throw new Error("stripe_account_create_failed: " + (json.error?.message ?? res.status))
+  return { id: json.id }
+}
+
+// What a Standard account is in Accounts v2: a full Stripe dashboard, Stripe
+// collects the requirements, the seller pays Stripe's fees and carries losses,
+// and the account takes card payments (merchant).
+export function standardAccountV2(person_id: string, country: string) {
+  return {
+    identity: { country: country.toUpperCase() },
+    dashboard: "full",
+    configuration: { merchant: { capabilities: { card_payments: { requested: true } } } },
+    defaults: { responsibilities: { fees_collector: "stripe", losses_collector: "stripe" } },
     metadata: { interfacer_person_id: person_id },
-  }, { idempotencyKey })
+  }
+}
+
+export async function createConnectAccount(api: StripeApi, person_id: string, country: string, idempotencyKey: string) {
+  return api.createAccountV2(standardAccountV2(person_id, country), idempotencyKey)
 }
 
 export async function onboardingLink(api: StripeApi, account_id: string, gui_url: string): Promise<string> {

@@ -23,6 +23,10 @@ buyer ──card──▶ seller's own Stripe account ──payout──▶ sell
   onboarding; identity, bank account and tax details never pass through
   Interfacer. They see their sales, refunds, disputes and payouts in their own
   Stripe dashboard, pay Stripe's processing fees and handle disputes.
+  The account is created through **Accounts v2** (`POST /v2/core/accounts`:
+  full dashboard, Stripe collects the requirements, fees and losses on the
+  seller, merchant configuration): Stripe refuses v1 account creation for new
+  Connect platforms. It is then read, linked and charged with the v1 API.
 - **Commission.** `INTERFACER_PLATFORM_FEE_BPS` (basis points, 800 = 8 %)
   plus an optional `INTERFACER_PLATFORM_FEE_FIXED_CENTS`, rounded to the cent,
   never above the price. It is the PaymentIntent's `application_fee_amount`:
@@ -89,7 +93,7 @@ session; writes carry the person's signature (the body is the signed params).
 | `GET /market/orders/:id/aftersale` | cases, refunds, `captured`, what the caller may do now |
 | `POST /market/orders/:id/cases` and `…/cases/:case/{withdraw,respond,returned}` | the steps above |
 | `POST /market/orders/:id/refunds` | seller refund |
-| `GET /market/store/seller` | each order now has `paid`, `capture_by` (products) and `open_case`; plus `cases` |
+| `GET /market/store/seller` | each order now has `paid`, `capture_by` (products), `refunded_eur` (refunds done) and `open_case`; plus `cases` |
 | `POST /hooks/payment/stripe_stripe` | Medusa's payment webhook (a **Connect** endpoint); in a pilot only via the GUI relay `/api/market-hooks/stripe` |
 
 ## Configuration

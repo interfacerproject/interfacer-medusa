@@ -128,10 +128,15 @@ const routes = [
       account: pi.account, application_fee_refunded: fee_refunded }
     return db.refunds[r.id] = r
   }],
-  ["POST", /^\/v1\/accounts$/, (b, _m, _q, account) => {
+  // As Stripe does for new Connect platforms: v1 account creation is refused.
+  ["POST", /^\/v1\/accounts$/, () => fail("Stripe no longer recommends Accounts v1 for new Connect integrations. Create connected accounts with POST /v2/core/accounts instead.")],
+  // Accounts v2 (JSON): a Standard account is a full dashboard, Stripe-collected requirements, merchant.
+  ["POST", /^\/v2\/core\/accounts$/, (b, _m, _q, account, headers) => {
     if (account) fail("Accounts are created by the platform")
-    if (b.type !== "standard") fail("Unsupported account type in the stub (direct charges use standard)")
-    const a = { id: id("acct"), object: "account", type: "standard", country: b.country, metadata: b.metadata ?? {},
+    if (!headers["stripe-version"]) fail("A Stripe-Version header is required for v2")
+    if (b.dashboard !== "full" || !b.configuration?.merchant || b.defaults?.responsibilities?.fees_collector !== "stripe"
+      || b.defaults?.responsibilities?.losses_collector !== "stripe") fail("Unsupported account in the stub (direct charges use a Standard account)")
+    const a = { id: id("acct"), object: "account", type: "standard", country: b.identity?.country, metadata: b.metadata ?? {},
       details_submitted: false, charges_enabled: false, payouts_enabled: false,
       requirements: { currently_due: ["external_account", "tos_acceptance.date"], past_due: [], disabled_reason: "requirements.past_due" },
       balance: 0 }
@@ -179,8 +184,9 @@ http.createServer((req, res) => {
         return send(db.idem[scope].status, db.idem[scope].payload)
       }
       const account = req.headers["stripe-account"]
-      const payload = route[2](req.method === "POST" ? parseForm(body) : {}, route[1].exec(url.pathname).slice(1),
-        url.searchParams, typeof account === "string" ? account : undefined)
+      const params = req.method !== "POST" ? {} : url.pathname.startsWith("/v2/") ? JSON.parse(body || "{}") : parseForm(body)
+      const payload = route[2](params, route[1].exec(url.pathname).slice(1),
+        url.searchParams, typeof account === "string" ? account : undefined, req.headers)
       if (scope) db.idem[scope] = { body, status: 200, payload }
       send(200, payload)
     } catch (e) {
