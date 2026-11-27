@@ -1,12 +1,13 @@
 import { verifyCommerceOperation } from "./zenflows-person"
 import type { ICartModuleService, MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, MedusaError, Modules, ProductStatus } from "@medusajs/framework/utils"
-import { addToCartWorkflow, createProductsWorkflow, updateRegionsWorkflow } from "@medusajs/medusa/core-flows"
+import { addToCartWorkflow, createProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
 import { seedCommerce } from "./commerce-context"
 import { requireCommerceMode } from "./deployment"
 import { formBuildQuote, termsHash } from "./matching"
+import { ensureRegionPaymentProvider } from "./settlement"
 
 export function buildRefuse(reason: string): never {
   throw new MedusaError(MedusaError.Types.NOT_ALLOWED, reason)
@@ -86,14 +87,7 @@ export async function acceptBuild(container: MedusaContainer, cartId: string, qu
     if (quote.provider_person_id === identity.person_id) buildRefuse("self_purchase_forbidden")
     if (cart.currency_code !== "eur" || cart.region_id !== context.region_id ||
         cart.sales_channel_id !== context.sales_channel_id) buildRefuse("build_commerce_context_required")
-    const query = container.resolve(ContainerRegistrationKeys.QUERY)
-    const { data: [region] } = await query.graph({
-      entity: "region", fields: ["id", "payment_providers.id"], filters: { id: context.region_id },
-    })
-    if (!region.payment_providers?.some((p: { id: string }) => p.id === "pp_system_default")) {
-      await updateRegionsWorkflow(container).run({ input: { selector: { id: context.region_id },
-        update: { payment_providers: [...region.payment_providers.map((p: { id: string }) => p.id), "pp_system_default"] } } })
-    }
+    await ensureRegionPaymentProvider(container, context.region_id)
     const acceptance = previous ?? await integration.createBuildAcceptances({
       cart_id: cartId, customer_id: customerId, quote_id: quoteId,
     })

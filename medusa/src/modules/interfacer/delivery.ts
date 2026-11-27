@@ -8,6 +8,7 @@ import { requireCommerceMode } from "./deployment"
 import { LIVE_POLICY } from "./live-listing"
 import { INTERFACER_MODULE } from "./index"
 import type InterfacerService from "./service"
+import { assertMilestoneAllowed } from "./settlement"
 import { enqueueMilestone, resumeMilestone, runZenflowsSyncSafely, withSync, type MilestoneInput } from "./zenflows-outbox"
 
 function refuse(reason: string): never {
@@ -87,6 +88,9 @@ export async function deliverOrder(container: MedusaContainer, orderId: string, 
     const { line, binding, identity } = await receiptFacts(container, order)
     await verifyCommerceOperation(auth, "commerce.order.deliver", { order_id: orderId }, binding.seller_agent_id)
     if (line.requires_shipping) refuse("interfacer_local_collection_only")
+    const [previousReceipt] = await integration.listReaReceipts({ order_id: orderId })
+    // Stripe: the buyer's payment is captured here, as the item is handed over.
+    if (!previousReceipt) await assertMilestoneAllowed(container, orderId, "stock")
     let active = (order.fulfillments ?? []).filter(f => !f.canceled_at)
     if (active.length > 1) refuse("interfacer_fulfillment_reconciliation_required")
     if (!active.length) {
