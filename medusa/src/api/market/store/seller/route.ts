@@ -56,7 +56,10 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const receipts = ids.length ? await integration.listReaReceipts({ order_id: ids }, { take: ids.length }) : []
   const syncs = ids.length ? await integration.listZenflowsSyncs({ order_id: ids }, { take: ids.length }) : []
   const cases = await openCasesFor(req.scope, person)
+  // What has gone back to buyers, so the seller's earnings are net of it.
+  const refunds = ids.length ? await integration.listRefunds({ order_id: ids, status: "done" }, { take: null }) : []
   for (const order of orders) {
+    order.refunded_eur = refunds.filter((r: any) => r.order_id === order.id).reduce((sum: number, r: any) => sum + r.amount_cents, 0) / 100
     const receipt = receipts.find(r => r.order_id === order.id)
     order.receipt = receipt ? withSync(receipt, syncs.find(s => s.order_id === order.id) as any) : null
     order.open_case = cases.find(c => c.order_id === order.id) ?? null
